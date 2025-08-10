@@ -53,9 +53,11 @@ python inference.py --input-dir <path_to_input_directory> --output-dir <path_to_
 
 This project uses the following models:
 
-*   **Text Detection:** `comictextdetector.pt` - A model for detecting text in comic images.
+*   **Text Detection:** `comictextdetector.pt` - A model for detecting text in comic images from the [comic-text-detector](https://github.com/dmMaze/comic-text-detector) repository.
+    *   Download the model from [GitHub](https://github.com/zyddnys/manga-image-translator/releases/tag/beta-0.2.1) or [Google Drive](https://drive.google.com/drive/folders/1cTsXP5NYTCjhPVxwScdhxqJleHuIOyXG?usp=sharing).
 *   **OCR:** `kha-white/manga-ocr-base` - A model for recognizing text in manga images.
 *   **LLM:** `qwen3:4b-instruct-2507-q4_K_M` - A large language model for translation.
+    *   **Note:** LLM inference requires [Ollama](https://ollama.ai/) to be installed and running.
 
 ## Acknowledgments
 
