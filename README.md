@@ -27,7 +27,6 @@ This project is a tool for translating manga images from one language to another
     ```bash
     pip install -r requirements.txt
     ```
-    *(Note: You will need to create a `requirements.txt` file from `pyproject.toml`)*
 
 
 ## Configuration
