@@ -248,9 +248,6 @@ def replace_text_with_translation(image_path, font_path, translated_texts, text_
         # Find the most common color in the text region
         background_color = get_background_color(image, x_min, y_min, x_max, y_max)
 
-        # Draw a rectangle to cover the text region with the original background color
-        draw.rectangle(((x_min, y_min), (x_max, y_max)), fill=background_color)
-
         fill = get_text_fill_color(background_color)
         x = x_min if out_of_bounds else text_box_x_min
         y = y_min if out_of_bounds else text_box_y_min
