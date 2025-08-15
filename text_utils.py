@@ -12,7 +12,7 @@ def post_process(text):
     return text
 
 
-def translate(text: str, model: str, context: str = "") -> str:
+def translate(text: str, model: str, context: str = "", target_language: str = "English") -> str:
     response: ChatResponse = chat(
         model=model,
         messages=[
@@ -30,13 +30,15 @@ def translate(text: str, model: str, context: str = "") -> str:
             },
             {
                 "role": "user",
-                "content": f"""Translate the given text from Japanese manga to English. Provide only the translation and nothing else.
-            Context the current page contains the following texts <context> {context} </context>, Use the context to
-            Provide the English translation for the text in Japanese between <text> tags <text>{text}</text>""",
+                "content": f"""Translate the given text from Japanese manga to {target_language}. Provide only the translation and nothing else.
+                Context the current page contains the following texts <context> {context} </context>, Use the context to
+                Provide the {target_language} translation for the text in Japanese between <text> tags <text>{text}</text>
+                """,
             },
         ],
         options={
             "temperature": 0.0,
+            "num_ctx": 64,
         },
         stream=False,
     )

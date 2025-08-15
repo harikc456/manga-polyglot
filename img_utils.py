@@ -178,8 +178,6 @@ def determine_font_size(
     size: int = 16,
     disable_increment: bool = False,
 ):
-    if size < 11:
-        return size
     font = ImageFont.truetype(font_path, size=size)
     lines = text_wrap(text, font, max_width - 10)
     max_line_width = max([get_text_width(line, font) for line in lines])
@@ -194,16 +192,27 @@ def determine_font_size(
     out_of_bounds = is_out_of_bounds(
         x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
     )
+    if size > 11 and size < 80:
+        if out_of_bounds:
+            size = determine_font_size(
+                font_path, text, max_width, max_height, center_x, center_y, x_min, y_min, x_max, y_max, size - 1, True
+            )
 
-    if out_of_bounds:
-        size = determine_font_size(
-            font_path, text, max_width, max_height, center_x, center_y, x_min, y_min, x_max, y_max, size - 1, True
-        )
-
-    if bounding_box_area / text_box_area > 16 and not disable_increment:
-        size = determine_font_size(
-            font_path, text, max_width, max_height, center_x, center_y, x_min, y_min, x_max, y_max, size + 1
-        )
+        elif bounding_box_area / text_box_area > 16 and not disable_increment:
+            size = determine_font_size(
+                font_path,
+                text,
+                max_width,
+                max_height,
+                center_x,
+                center_y,
+                x_min,
+                y_min,
+                x_max,
+                y_max,
+                size + 1,
+                disable_increment,
+            )
     return size
 
 
