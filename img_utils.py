@@ -1,10 +1,15 @@
 import cv2
 import torch
+import hashlib
 import numpy as np
 from typing import Union
 from utils.yolov5_utils import non_max_suppression
 from utils.imgproc_utils import letterbox
 from PIL import Image, ImageDraw, ImageFont
+
+def get_img_hash(img_path: str) -> str:
+    md5hash = hashlib.md5(Image.open(img_path).tobytes())
+    return md5hash.hexdigest()
 
 
 def imread(imgpath, read_type=cv2.IMREAD_COLOR):
@@ -142,24 +147,24 @@ def text_wrap(text, font, max_width):
     return lines
 
 
-def find_text_box_coordinates(max_line_width: int, max_line_height: int, center_x: int, center_y: int):
+def find_text_box_coordinates(max_line_width: int, total_line_height: int, center_x: int, center_y: int):
     text_box_x_min = center_x - max_line_width // 2 + 1
-    text_box_y_min = center_y - max_line_height // 2 + 1
+    text_box_y_min = center_y - total_line_height // 2 + 1
 
     text_box_x_max = center_x + max_line_width // 2 + 1
-    text_box_y_max = center_y + max_line_height // 2 + 1
+    text_box_y_max = center_y + total_line_height // 2 + 1
 
     return text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
 
 
 def is_out_of_bounds(x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max):
-    if text_box_x_min < x_min:
+    if (text_box_x_min - x_min) < -5:
         return True
-    if text_box_y_min < y_min:
+    if (text_box_y_min - y_min) < -5:
         return True
-    if text_box_x_max > x_max:
+    if (text_box_x_max - x_max) > 5:
         return True
-    if text_box_y_max > y_max:
+    if (text_box_y_max > y_max) > 5:
         return True
     return False
 
@@ -182,11 +187,12 @@ def determine_font_size(
     lines = text_wrap(text, font, max_width - 10)
     max_line_width = max([get_text_width(line, font) for line in lines])
     max_line_height = max([get_text_height(line, font) for line in lines])
+    total_line_height = max_line_height * (len(lines) + 1)
     text_box_area = 2 * max_line_width * max_line_height
     bounding_box_area = 2 * max_width * max_height
 
     text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max = find_text_box_coordinates(
-        max_line_width, max_line_height, center_x, center_y
+        max_line_width, total_line_height, center_x, center_y
     )
 
     out_of_bounds = is_out_of_bounds(
@@ -244,11 +250,9 @@ def replace_text_with_translation(image_path, font_path, translated_texts, text_
         lines = text_wrap(translated, font, max_width - 10)
         max_line_width = max([get_text_width(line, font) for line in lines])
         max_line_height = max([get_text_height(line, font) for line in lines])
+        total_line_height = max_line_height * (len(lines) + 1)
 
-        text_box_x_min = center_x - max_line_width // 2 + 1
-        text_box_y_min = center_y - max_line_height // 2 + 1
-        text_box_x_max = center_x + max_line_width // 2 + 1
-        text_box_y_max = center_y + max_line_height // 2 + 1
+        text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max = find_text_box_coordinates(max_line_width, total_line_height, center_x, center_y)
 
         out_of_bounds = is_out_of_bounds(
             x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
@@ -261,8 +265,14 @@ def replace_text_with_translation(image_path, font_path, translated_texts, text_
         x = x_min if out_of_bounds else text_box_x_min
         y = y_min if out_of_bounds else text_box_y_min
 
+        print(x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max)
+
         for line in lines:
             draw.text((x, y), line, fill=fill, font=font)
             y = y + max_line_height + y_pad
+
+        print(translated, font_size, out_of_bounds)
+
+        print("\n\n")
 
     return image
