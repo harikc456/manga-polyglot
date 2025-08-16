@@ -127,8 +127,6 @@ def main():
 
     driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, model_path, target_language)
 
-    
-
 
 if __name__ == "__main__":
     main()
