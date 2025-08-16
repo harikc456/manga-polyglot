@@ -4,8 +4,8 @@ import json
 import torch
 import argparse
 from PIL import Image
-from tqdm.notebook import tqdm
-from img_utils import imread, replace_text_with_translation
+from tqdm import tqdm
+from img_utils import imread, replace_text_with_translation, get_img_hash
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 
 from text_detector import TextDetector
@@ -51,7 +51,7 @@ def extract_text(img_path, blk_list, ocr_model, processor, tokenizer):
     return texts, text_boxes
 
 
-def drive(img_path, temp_dir, ocr_model_id, llm_name, font_path, model_path, out_path, target_language):
+def driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, model_path, target_language):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     det_model = TextDetector(model_path=model_path, input_size=1024, device=device, act="leaky")
     processor = ViTImageProcessor.from_pretrained(ocr_model_id)
@@ -62,25 +62,39 @@ def drive(img_path, temp_dir, ocr_model_id, llm_name, font_path, model_path, out
     if not os.path.exists(temp_dir):
         os.mkdir(temp_dir)
 
-    # Read image
-    img = imread(img_path)
+    with open("computed.json") as f:
+        computed = json.load(f)
 
-    # Perform text detection (bounding box prediction)
-    _, mask_refined, blk_list = det_model(img)
+    img_paths = os.listdir(input_dir)
+    for img_name in tqdm(img_paths):
+        img_path = os.path.join(input_dir, img_name)
+        out_path = os.path.join(output_dir, img_name)
 
-    ## clean the image to remove the texts
-    cleaned_file_path = clean_page(img_path, temp_dir, blk_list, mask_refined)
+        img_hash = get_img_hash(img_path)
 
-    # Extract texts from the bounding boxes
-    texts, text_boxes = extract_text(img_path, blk_list, ocr_model, processor, tokenizer)
+        if img_hash in computed:
+            # TODO Reusing previously computed data
+            pass
 
-    # Translate all the texts extracted from the page
-    context = "\n".join(texts)
-    translated_texts = [translate(text, llm_name, context, target_language) for text in texts]
+        # Read image
+        img = imread(img_path)
 
-    # Replace original text with the translated ones
-    translated_image = replace_text_with_translation(cleaned_file_path, font_path, translated_texts, text_boxes)
-    translated_image.save(out_path)
+        # Perform text detection (bounding box prediction)
+        _, mask_refined, blk_list = det_model(img)
+
+        ## clean the image to remove the texts
+        cleaned_file_path = clean_page(img_path, temp_dir, blk_list, mask_refined)
+
+        # Extract texts from the bounding boxes
+        texts, text_boxes = extract_text(img_path, blk_list, ocr_model, processor, tokenizer)
+
+        # Translate all the texts extracted from the page
+        context = "\n".join(texts)
+        translated_texts = [translate(text, llm_name, context, target_language) for text in texts]
+
+        # Replace original text with the translated ones
+        translated_image = replace_text_with_translation(cleaned_file_path, font_path, translated_texts, text_boxes)
+        translated_image.save(out_path)
 
 
 def main():
@@ -111,11 +125,9 @@ def main():
     font_path = config["font_path"]
     target_language = args.target_lang
 
-    img_paths = os.listdir(input_dir)
-    for img_name in tqdm(img_paths):
-        img_path = os.path.join(input_dir, img_name)
-        out_path = os.path.join(output_dir, img_name)
-        drive(img_path, temp_dir, ocr_model_id, llm_name, font_path, model_path, out_path, target_language)
+    driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, model_path, target_language)
+
+    
 
 
 if __name__ == "__main__":
