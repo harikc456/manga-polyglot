@@ -7,6 +7,7 @@ from utils.yolov5_utils import non_max_suppression
 from utils.imgproc_utils import letterbox
 from PIL import Image, ImageDraw, ImageFont
 
+
 def get_img_hash(img_path: str) -> str:
     md5hash = hashlib.md5(Image.open(img_path).tobytes())
     return md5hash.hexdigest()
@@ -252,7 +253,9 @@ def replace_text_with_translation(image_path, font_path, translated_texts, text_
         max_line_height = max([get_text_height(line, font) for line in lines])
         total_line_height = max_line_height * (len(lines) + 1)
 
-        text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max = find_text_box_coordinates(max_line_width, total_line_height, center_x, center_y)
+        text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max = find_text_box_coordinates(
+            max_line_width, total_line_height, center_x, center_y
+        )
 
         out_of_bounds = is_out_of_bounds(
             x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
@@ -265,14 +268,8 @@ def replace_text_with_translation(image_path, font_path, translated_texts, text_
         x = x_min if out_of_bounds else text_box_x_min
         y = y_min if out_of_bounds else text_box_y_min
 
-        print(x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max)
-
         for line in lines:
             draw.text((x, y), line, fill=fill, font=font)
             y = y + max_line_height + y_pad
-
-        print(translated, font_size, out_of_bounds)
-
-        print("\n\n")
 
     return image
