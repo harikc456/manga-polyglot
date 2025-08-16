@@ -3,6 +3,20 @@ import jaconv
 from ollama import chat
 from ollama import ChatResponse
 
+system_prompt = """You are a manga translator for one of the biggest publishers in the world. You will be given the entire context of a page or chapter and then will be asked to translate a specific text which is part of that context. You must use the context to provide an accurate translation of the text. Do not translate the context in one go. Ensure that the translated text remains meaningful taking the overall context into account. Ensure the tenses and proverbs are consistent across the translation. Use a casual tone and eliminate redundancy in the translation.
+
+You should only translate the text given between the <text> tags. Do not provide any reasoning or reflection about the translation."""
+
+def get_formatted_user_prompt(context: str, text: str, target_language: str):
+    user_prompt = f"""Translate the given text from Japanese manga to {target_language}. Provide only the translation and nothing else.
+
+    Context: The current page contains the following texts: <context>{context}</context>
+
+    Use the context to provide the {target_language} translation for the Japanese text between <text> tags: <text>{text}</text>
+
+    The response SHOULD be in {target_language}."""
+    return user_prompt
+
 
 def post_process(text):
     text = "".join(text.split())
@@ -18,27 +32,16 @@ def translate(text: str, model: str, context: str = "", target_language: str = "
         messages=[
             {
                 "role": "system",
-                "content": """
-                You are manga translator for one of the biggest publisher in the world, you will be given the entire context of page or
-                chapter and then will be asked to translate a text which is part of the context. You have to use the context to give 
-                accurate translate of the text. Do not translate the context in one go. Ensure that the translated text remains meaningful
-                taking the overall context into account. Ensure the tenses and proverbs are consistent across the translation. 
-                Use casual tone and eliminate redudancy in the translation
-                
-                You should only translate the text given between the <text> tags.
-            """,
+                "content": system_prompt,
             },
             {
                 "role": "user",
-                "content": f"""Translate the given text from Japanese manga to {target_language}. Provide only the translation and nothing else.
-                Context the current page contains the following texts <context> {context} </context>, Use the context to
-                Provide the {target_language} translation for the text in Japanese between <text> tags <text>{text}</text>
-                """,
+                "content": get_formatted_user_prompt(context, text, target_language),
             },
         ],
         options={
             "temperature": 0.0,
-            "num_ctx": 64,
+            "num_ctx": 50,
         },
         stream=False,
     )
