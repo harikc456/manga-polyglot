@@ -16,6 +16,7 @@ CRITICAL OUTPUT RULES:
 - Do not repeat any part of the translation
 - The onomatopoeia needs to be translated appropriately
 - Keep emoji's and english texts in the given text as it is while translating
+- Do not ask for more context than given.
 
 Only translate the text given between the <text> tags. Your response should be concise and complete."""
 

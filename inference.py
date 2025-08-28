@@ -9,7 +9,7 @@ from img_utils import imread, replace_text_with_translation, get_img_hash
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 
 from text_detector import TextDetector
-from text_utils import post_process, translate, get_page_context
+from text_utils import post_process, translate
 
 
 def clean_text_blocks(img, mask):
