@@ -9,7 +9,7 @@ from img_utils import imread, replace_text_with_translation, get_img_hash
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 
 from text_detector import TextDetector
-from text_utils import post_process, translate
+from text_utils import post_process, translate, get_page_context
 
 
 def clean_text_blocks(img, mask):
@@ -90,7 +90,9 @@ def driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, m
 
         # Translate all the texts extracted from the page
         context = "\n".join(texts)
-        translated_texts = [translate(text, llm_name, context, target_language) for text in texts]
+        # page_context = get_page_context(img_path)
+        page_context = ""  # TODO remove page context
+        translated_texts = [translate(text, llm_name, context, page_context, target_language) for text in texts]
 
         # Replace original text with the translated ones
         translated_image = replace_text_with_translation(cleaned_file_path, font_path, translated_texts, text_boxes)
