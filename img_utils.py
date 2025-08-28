@@ -242,6 +242,9 @@ def replace_text_with_translation(image_path, font_path, translated_texts, text_
 
         center_x, center_y = x_min + max_width // 2, y_min + max_height // 2
 
+        if not translated:
+            continue
+
         # Load a font
         font_size = determine_font_size(
             font_path, translated, max_width, max_height, center_x, center_y, x_min, y_min, x_max, y_max
