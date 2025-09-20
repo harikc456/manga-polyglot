@@ -19,7 +19,9 @@ def scale_img(img, ratio=1.0, same_shape=False, gs=32):  # img(16,3,256,416)
         img = F.interpolate(img, size=s, mode="bilinear", align_corners=False)  # resize
         if not same_shape:  # pad/crop img
             h, w = (math.ceil(x * ratio / gs) * gs for x in (h, w))
-        return F.pad(img, [0, w - s[1], 0, h - s[0]], value=0.447)  # value = imagenet mean
+        return F.pad(
+            img, [0, w - s[1], 0, h - s[0]], value=0.447
+        )  # value = imagenet mean
 
 
 def fuse_conv_and_bn(conv, bn):
@@ -44,8 +46,14 @@ def fuse_conv_and_bn(conv, bn):
     fusedconv.weight.copy_(torch.mm(w_bn, w_conv).view(fusedconv.weight.shape))
 
     # prepare spatial bias
-    b_conv = torch.zeros(conv.weight.size(0), device=conv.weight.device) if conv.bias is None else conv.bias
-    b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(torch.sqrt(bn.running_var + bn.eps))
+    b_conv = (
+        torch.zeros(conv.weight.size(0), device=conv.weight.device)
+        if conv.bias is None
+        else conv.bias
+    )
+    b_bn = bn.bias - bn.weight.mul(bn.running_mean).div(
+        torch.sqrt(bn.running_var + bn.eps)
+    )
     fusedconv.bias.copy_(torch.mm(w_bn, b_conv.reshape(-1, 1)).reshape(-1) + b_bn)
 
     return fusedconv
@@ -81,15 +89,23 @@ def make_divisible(x, divisor):
 
 def intersect_dicts(da, db, exclude=()):
     # Dictionary intersection of matching keys and shapes, omitting 'exclude' keys, using da values
-    return {k: v for k, v in da.items() if k in db and not any(x in k for x in exclude) and v.shape == db[k].shape}
+    return {
+        k: v
+        for k, v in da.items()
+        if k in db and not any(x in k for x in exclude) and v.shape == db[k].shape
+    }
 
 
-def check_version(current="0.0.0", minimum="0.0.0", name="version ", pinned=False, hard=False):
+def check_version(
+    current="0.0.0", minimum="0.0.0", name="version ", pinned=False, hard=False
+):
     # Check version vs. required version
     current, minimum = (pkg.parse_version(x) for x in (current, minimum))
     result = (current == minimum) if pinned else (current >= minimum)  # bool
     if hard:  # assert min requirements met
-        assert result, f"{name}{minimum} required by YOLOv5, but {name}{current} is currently installed"
+        assert (
+            result
+        ), f"{name}{minimum} required by YOLOv5, but {name}{current} is currently installed"
     else:
         return result
 
@@ -153,12 +169,28 @@ def box_iou(box1, box2):
     area2 = box_area(box2.T)
 
     # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
-    inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
-    return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
+    inter = (
+        (
+            torch.min(box1[:, None, 2:], box2[:, 2:])
+            - torch.max(box1[:, None, :2], box2[:, :2])
+        )
+        .clamp(0)
+        .prod(2)
+    )
+    return inter / (
+        area1[:, None] + area2 - inter
+    )  # iou = inter / (area1 + area2 - inter)
 
 
 def non_max_suppression(
-    prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False, labels=(), max_det=300
+    prediction,
+    conf_thres=0.25,
+    iou_thres=0.45,
+    classes=None,
+    agnostic=False,
+    multi_label=False,
+    labels=(),
+    max_det=300,
 ):
     """Runs Non-Maximum Suppression (NMS) on inference results
 
@@ -173,8 +205,12 @@ def non_max_suppression(
     xc = prediction[..., 4] > conf_thres  # candidates
 
     # Checks
-    assert 0 <= conf_thres <= 1, f"Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0"
-    assert 0 <= iou_thres <= 1, f"Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0"
+    assert (
+        0 <= conf_thres <= 1
+    ), f"Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0"
+    assert (
+        0 <= iou_thres <= 1
+    ), f"Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0"
 
     # Settings
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
@@ -243,7 +279,9 @@ def non_max_suppression(
             # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
             iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
             weights = iou * scores[None]  # box weights
-            x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
+            x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(
+                1, keepdim=True
+            )  # merged boxes
             if redundant:
                 i = i[iou.sum(1) > 1]  # require redundancy
 
@@ -281,6 +319,13 @@ def draw_bbox(pred, img, lang_list=None):
         cv2.rectangle(img, p1, p2, colors(obj[-1], bgr=True), lw, lineType=cv2.LINE_AA)
         t_w, t_h = cv2.getTextSize(label, 0, fontScale=lw / 3, thickness=lw)[0]
         cv2.putText(
-            img, label, (p1[0], p1[1] + t_h + 2), 0, lw / 3, colors(obj[-1], bgr=True), max(lw - 1, 1), cv2.LINE_AA
+            img,
+            label,
+            (p1[0], p1[1] + t_h + 2),
+            0,
+            lw / 3,
+            colors(obj[-1], bgr=True),
+            max(lw - 1, 1),
+            cv2.LINE_AA,
         )
     return img

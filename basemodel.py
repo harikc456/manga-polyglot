@@ -23,7 +23,9 @@ class double_conv_up_c3(nn.Module):
         super(double_conv_up_c3, self).__init__()
         self.conv = nn.Sequential(
             C3(in_ch + mid_ch, mid_ch, act=act),
-            nn.ConvTranspose2d(mid_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.ConvTranspose2d(
+                mid_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False
+            ),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
         )
@@ -57,7 +59,8 @@ class UnetHead(nn.Module):
         self.upconv4 = double_conv_up_c3(128, 256, 128, act=act)
         self.upconv5 = double_conv_up_c3(64, 128, 64, act=act)
         self.upconv6 = nn.Sequential(
-            nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1, bias=False), nn.Sigmoid()
+            nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.Sigmoid(),
         )
 
     def forward(self, f160, f80, f40, f20, f3, forward_mode=TEXTDET_MASK):
@@ -89,7 +92,11 @@ class DBHead(nn.Module):
         self.shrink_with_sigmoid = shrink_with_sigmoid
         self.upconv3 = double_conv_up_c3(0, 512, 256, act=act)
         self.upconv4 = double_conv_up_c3(128, 256, 128, act=act)
-        self.conv = nn.Sequential(nn.Conv2d(128, in_channels, 1), nn.BatchNorm2d(in_channels), nn.ReLU(inplace=True))
+        self.conv = nn.Sequential(
+            nn.Conv2d(128, in_channels, 1),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+        )
         self.binarize = nn.Sequential(
             nn.Conv2d(in_channels, in_channels // 4, 3, padding=1),
             nn.BatchNorm2d(in_channels // 4),
@@ -133,7 +140,9 @@ class DBHead(nn.Module):
             nn.Conv2d(in_channels, inner_channels // 4, 3, padding=1, bias=bias),
             nn.BatchNorm2d(inner_channels // 4),
             nn.ReLU(inplace=True),
-            self._init_upsample(inner_channels // 4, inner_channels // 4, smooth=smooth, bias=bias),
+            self._init_upsample(
+                inner_channels // 4, inner_channels // 4, smooth=smooth, bias=bias
+            ),
             nn.BatchNorm2d(inner_channels // 4),
             nn.ReLU(inplace=True),
             self._init_upsample(inner_channels // 4, 1, smooth=smooth, bias=bias),
@@ -151,7 +160,16 @@ class DBHead(nn.Module):
                 nn.Conv2d(in_channels, inter_out_channels, 3, 1, 1, bias=bias),
             ]
             if out_channels == 1:
-                module_list.append(nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=1, bias=True))
+                module_list.append(
+                    nn.Conv2d(
+                        in_channels,
+                        out_channels,
+                        kernel_size=1,
+                        stride=1,
+                        padding=1,
+                        bias=True,
+                    )
+                )
             return nn.Sequential(module_list)
         else:
             return nn.ConvTranspose2d(in_channels, out_channels, 2, 2)
@@ -161,7 +179,9 @@ class DBHead(nn.Module):
 
 
 class TextDetector(nn.Module):
-    def __init__(self, weights, map_location="cpu", forward_mode=TEXTDET_MASK, act=True):
+    def __init__(
+        self, weights, map_location="cpu", forward_mode=TEXTDET_MASK, act=True
+    ):
         super(TextDetector, self).__init__()
 
         yolov5s_backbone = load_yolov5_ckpt(weights=weights, map_location=map_location)
@@ -182,7 +202,9 @@ class TextDetector(nn.Module):
 
     def initialize_db(self, unet_weights):
         self.dbnet = DBHead(64, act=self.act)
-        self.seg_net.load_state_dict(torch.load(unet_weights, map_location="cpu")["weights"])
+        self.seg_net.load_state_dict(
+            torch.load(unet_weights, map_location="cpu")["weights"]
+        )
         self.dbnet.init_weight(init_weights)
         self.dbnet.upconv3 = copy.deepcopy(self.seg_net.upconv3)
         self.dbnet.upconv4 = copy.deepcopy(self.seg_net.upconv4)
@@ -219,13 +241,19 @@ def get_base_det_models(model_path, device="cpu", half=False, act="leaky"):
     text_det.load_state_dict(textdetector_dict["text_det"])
     if half:
         return blk_det.eval().half(), text_seg.eval().half(), text_det.eval().half()
-    return blk_det.eval().to(device), text_seg.eval().to(device), text_det.eval().to(device)
+    return (
+        blk_det.eval().to(device),
+        text_seg.eval().to(device),
+        text_det.eval().to(device),
+    )
 
 
 class TextDetBase(nn.Module):
     def __init__(self, model_path, device="cpu", half=False, fuse=False, act="leaky"):
         super(TextDetBase, self).__init__()
-        self.blk_det, self.text_seg, self.text_det = get_base_det_models(model_path, device, half, act=act)
+        self.blk_det, self.text_seg, self.text_det = get_base_det_models(
+            model_path, device, half, act=act
+        )
         if fuse:
             self.fuse()
 
@@ -255,7 +283,9 @@ class TextDetBaseDNN:
         self.uoln = self.model.getUnconnectedOutLayersNames()
 
     def __call__(self, im_in):
-        blob = cv2.dnn.blobFromImage(im_in, scalefactor=1 / 255.0, size=(self.input_size, self.input_size))
+        blob = cv2.dnn.blobFromImage(
+            im_in, scalefactor=1 / 255.0, size=(self.input_size, self.input_size)
+        )
         self.model.setInput(blob)
         blks, mask, lines_map = self.model.forward(self.uoln)
         return blks, mask, lines_map

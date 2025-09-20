@@ -56,7 +56,9 @@ class TextBlock(object):
         )  # distance between textlines and "origin"
         self.angle = angle  # rotation angle of textlines
 
-        self.vec = None if vec is None else np.array(vec, np.float64)  # primary vector of textblock
+        self.vec = (
+            None if vec is None else np.array(vec, np.float64)
+        )  # primary vector of textblock
         self.norm = norm  # primary norm of textblock
         self.merged = merged
         self.weight = weight
@@ -185,13 +187,17 @@ class TextBlock(object):
         if direction == "h":
             h = int(textheight)
             w = int(round(textheight / ratio))
-            dst_pts = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]).astype(np.float32)
+            dst_pts = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]).astype(
+                np.float32
+            )
             M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
             region = cv2.warpPerspective(img, M, (w, h))
         elif direction == "v":
             w = int(textheight)
             h = int(round(textheight * ratio))
-            dst_pts = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]).astype(np.float32)
+            dst_pts = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]).astype(
+                np.float32
+            )
             M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
             region = cv2.warpPerspective(img, M, (w, h))
             region = cv2.rotate(region, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -263,14 +269,18 @@ class TextBlock(object):
 
     @property
     def stroke_width(self):
-        var = np.array([self.fg_r, self.fg_g, self.fg_b]) - np.array([self.bg_r, self.bg_g, self.bg_b])
+        var = np.array([self.fg_r, self.fg_g, self.fg_b]) - np.array(
+            [self.bg_r, self.bg_g, self.bg_b]
+        )
         var = np.abs(var).sum()
         if var > 40:
             return self.default_stroke_width
         return 0
 
 
-def sort_textblk_list(blk_list: List[TextBlock], im_w: int, im_h: int) -> List[TextBlock]:
+def sort_textblk_list(
+    blk_list: List[TextBlock], im_w: int, im_h: int
+) -> List[TextBlock]:
     if len(blk_list) == 0:
         return blk_list
     num_ja = 0
@@ -297,7 +307,9 @@ def sort_textblk_list(blk_list: List[TextBlock], im_w: int, im_h: int) -> List[T
     grid_y = (center_y / im_h * num_gridy).astype(np.int32)
     grid_indices = grid_y * num_gridx + grid_x
     grid_weights = (
-        grid_indices * img_area + 1.2 * (center_x - grid_x * im_w / num_gridx) + (center_y - grid_y * im_h / num_gridy)
+        grid_indices * img_area
+        + 1.2 * (center_x - grid_x * im_w / num_gridx)
+        + (center_y - grid_y * im_h / num_gridy)
     )
     if im_w != im_oriw:
         grid_weights[np.where(grid_x >= num_gridx)] += img_area * num_gridy * num_gridx
@@ -334,9 +346,15 @@ def examine_textblk(blk: TextBlock, im_w: int, im_h: int, sort: bool = False) ->
         distance_vectors = center_pnts - np.array([[0, 0]], dtype=np.float64)
         font_size = int(round(norm_v / len(lines)))
 
-    rotation_angle = int(math.atan2(primary_vec[1], primary_vec[0]) / math.pi * 180)  # rotation angle of textlines
-    distance = np.linalg.norm(distance_vectors, axis=1)  # distance between textlinecenters and origin
-    rad_matrix = np.arccos(np.einsum("ij, j->i", distance_vectors, primary_vec) / (distance * primary_norm))
+    rotation_angle = int(
+        math.atan2(primary_vec[1], primary_vec[0]) / math.pi * 180
+    )  # rotation angle of textlines
+    distance = np.linalg.norm(
+        distance_vectors, axis=1
+    )  # distance between textlinecenters and origin
+    rad_matrix = np.arccos(
+        np.einsum("ij, j->i", distance_vectors, primary_vec) / (distance * primary_norm)
+    )
     distance = np.abs(np.sin(rad_matrix) * distance)
     blk.lines = lines.astype(np.int32).tolist()
     blk.distance = distance
@@ -353,7 +371,9 @@ def examine_textblk(blk: TextBlock, im_w: int, im_h: int, sort: bool = False) ->
         blk.sort_lines()
 
 
-def try_merge_textline(blk: TextBlock, blk2: TextBlock, fntsize_tol=1.3, distance_tol=2) -> bool:
+def try_merge_textline(
+    blk: TextBlock, blk2: TextBlock, fntsize_tol=1.3, distance_tol=2
+) -> bool:
     if blk2.merged:
         return False
     fntsize_div = blk.font_size / blk2.font_size
@@ -363,7 +383,9 @@ def try_merge_textline(blk: TextBlock, blk2: TextBlock, fntsize_tol=1.3, distanc
     vec_sum = blk.vec + blk2.vec
     cos_vec = vec_prod / blk.norm / blk2.norm
     distance = blk2.distance[-1] - blk.distance[-1]
-    distance_p1 = np.linalg.norm(np.array(blk2.lines[-1][0]) - np.array(blk.lines[-1][0]))
+    distance_p1 = np.linalg.norm(
+        np.array(blk2.lines[-1][0]) - np.array(blk.lines[-1][0])
+    )
     l1, l2 = Polygon(blk.lines[-1]), Polygon(blk2.lines[-1])
     if not l1.intersects(l2):
         if fntsize_div > fntsize_tol or 1 / fntsize_div > fntsize_tol:
@@ -433,7 +455,9 @@ def split_textblk(blk: TextBlock):
     return textblock_splitted, sub_blk_list
 
 
-def group_output(blks, lines, im_w, im_h, mask=None, sort_blklist=True) -> List[TextBlock]:
+def group_output(
+    blks, lines, im_w, im_h, mask=None, sort_blklist=True
+) -> List[TextBlock]:
     blk_list: List[TextBlock] = []
     scattered_lines = {"ver": [], "hor": []}
     for bbox, cls, conf in zip(*blks):
@@ -513,7 +537,9 @@ def group_output(blks, lines, im_w, im_h, mask=None, sort_blklist=True) -> List[
             expand_size = max(int(blk.font_size * 0.1), 2)
             rad = np.deg2rad(blk.angle)
             shifted_vec = np.array([[[-1, -1], [1, -1], [1, 1], [-1, 1]]])
-            shifted_vec = shifted_vec * np.array([[[np.sin(rad), np.cos(rad)]]]) * expand_size
+            shifted_vec = (
+                shifted_vec * np.array([[[np.sin(rad), np.cos(rad)]]]) * expand_size
+            )
             lines = blk.lines_array() + shifted_vec
             lines[..., 0] = np.clip(lines[..., 0], 0, im_w - 1)
             lines[..., 1] = np.clip(lines[..., 1], 0, im_h - 1)
@@ -530,10 +556,35 @@ def visualize_textblocks(canvas, blk_list: List[TextBlock]):
         cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (127, 255, 127), lw)
         lines = blk.lines_array(dtype=np.int32)
         for jj, line in enumerate(lines):
-            cv2.putText(canvas, str(jj), line[0], cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 127, 0), 1)
+            cv2.putText(
+                canvas,
+                str(jj),
+                line[0],
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 127, 0),
+                1,
+            )
             cv2.polylines(canvas, [line], True, (0, 127, 255), 2)
         cv2.polylines(canvas, [blk.min_rect()], True, (127, 127, 0), 2)
         center = [int((bx1 + bx2) / 2), int((by1 + by2) / 2)]
-        cv2.putText(canvas, str(blk.angle), center, cv2.FONT_HERSHEY_SIMPLEX, 1, (127, 127, 255), 2)
-        cv2.putText(canvas, str(ii), (bx1, by1 + lw + 2), 0, lw / 3, (255, 127, 127), max(lw - 1, 1), cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            str(blk.angle),
+            center,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (127, 127, 255),
+            2,
+        )
+        cv2.putText(
+            canvas,
+            str(ii),
+            (bx1, by1 + lw + 2),
+            0,
+            lw / 3,
+            (255, 127, 127),
+            max(lw - 1, 1),
+            cv2.LINE_AA,
+        )
     return canvas

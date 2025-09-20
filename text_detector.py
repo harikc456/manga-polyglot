@@ -5,7 +5,12 @@ from basemodel import TextDetBase
 from utils.db_utils import SegDetectorRepresenter
 from utils.textblock import TextBlock, group_output, visualize_textblocks
 from img_utils import preprocess_img, postprocess_mask, postprocess_yolo, imread
-from utils.textmask import refine_mask, refine_undetected_mask, REFINEMASK_INPAINT, REFINEMASK_ANNOTATION
+from utils.textmask import (
+    refine_mask,
+    refine_undetected_mask,
+    REFINEMASK_INPAINT,
+    REFINEMASK_ANNOTATION,
+)
 
 
 class TextDetector:
@@ -40,13 +45,20 @@ class TextDetector:
     @torch.no_grad()
     def __call__(self, img, refine_mode=REFINEMASK_INPAINT, keep_undetected_mask=False):
         img_in, ratio, dw, dh = preprocess_img(
-            img, input_size=self.input_size, device=self.device, half=self.half, to_tensor=self.backend == "torch"
+            img,
+            input_size=self.input_size,
+            device=self.device,
+            half=self.half,
+            to_tensor=self.backend == "torch",
         )
         im_h, im_w = img.shape[:2]
 
         blks, mask, lines_map = self.net(img_in)
 
-        resize_ratio = (im_w / (self.input_size[0] - dw), im_h / (self.input_size[1] - dh))
+        resize_ratio = (
+            im_w / (self.input_size[0] - dw),
+            im_h / (self.input_size[1] - dh),
+        )
         blks = postprocess_yolo(blks, self.conf_thresh, self.nms_thresh, resize_ratio)
 
         if self.backend == "opencv":
@@ -74,6 +86,8 @@ class TextDetector:
         blk_list = group_output(blks, lines, im_w, im_h, mask)
         mask_refined = refine_mask(img, mask, blk_list, refine_mode=refine_mode)
         if keep_undetected_mask:
-            mask_refined = refine_undetected_mask(img, mask, mask_refined, blk_list, refine_mode=refine_mode)
+            mask_refined = refine_undetected_mask(
+                img, mask, mask_refined, blk_list, refine_mode=refine_mode
+            )
 
         return mask, mask_refined, blk_list

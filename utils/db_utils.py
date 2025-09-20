@@ -32,7 +32,9 @@ def iou_rotate(box_a, box_b, method="union"):
 
 
 class SegDetectorRepresenter:
-    def __init__(self, thresh=0.3, box_thresh=0.7, max_candidates=1000, unclip_ratio=1.5):
+    def __init__(
+        self, thresh=0.3, box_thresh=0.7, max_candidates=1000, unclip_ratio=1.5
+    ):
         self.min_size = 3
         self.thresh = thresh
         self.box_thresh = box_thresh
@@ -63,9 +65,13 @@ class SegDetectorRepresenter:
             # height, width = batch['shape'][batch_index]
             height, width = pred.shape[1], pred.shape[2]
             if is_output_polygon:
-                boxes, scores = self.polygons_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
+                boxes, scores = self.polygons_from_bitmap(
+                    pred[batch_index], segmentation[batch_index], width, height
+                )
             else:
-                boxes, scores = self.boxes_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
+                boxes, scores = self.boxes_from_bitmap(
+                    pred[batch_index], segmentation[batch_index], width, height
+                )
             boxes_batch.append(boxes)
             scores_batch.append(scores)
         return boxes_batch, scores_batch
@@ -86,7 +92,9 @@ class SegDetectorRepresenter:
         boxes = []
         scores = []
 
-        contours, _ = cv2.findContours((bitmap * 255).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            (bitmap * 255).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         for contour in contours[: self.max_candidates]:
             epsilon = 0.005 * cv2.arcLength(contour, True)
@@ -117,7 +125,9 @@ class SegDetectorRepresenter:
                 dest_height = dest_height.item()
 
             box[:, 0] = np.clip(np.round(box[:, 0] / width * dest_width), 0, dest_width)
-            box[:, 1] = np.clip(np.round(box[:, 1] / height * dest_height), 0, dest_height)
+            box[:, 1] = np.clip(
+                np.round(box[:, 1] / height * dest_height), 0, dest_height
+            )
             boxes.append(box)
             scores.append(score)
         return boxes, scores
@@ -135,7 +145,9 @@ class SegDetectorRepresenter:
         else:
             bitmap = _bitmap
         height, width = bitmap.shape
-        contours, _ = cv2.findContours((bitmap * 255).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            (bitmap * 255).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+        )
         num_contours = min(len(contours), self.max_candidates)
         boxes = np.zeros((num_contours, 4, 2), dtype=np.int16)
         scores = np.zeros((num_contours,), dtype=np.float32)
@@ -162,7 +174,9 @@ class SegDetectorRepresenter:
                 dest_height = dest_height.item()
 
             box[:, 0] = np.clip(np.round(box[:, 0] / width * dest_width), 0, dest_width)
-            box[:, 1] = np.clip(np.round(box[:, 1] / height * dest_height), 0, dest_height)
+            box[:, 1] = np.clip(
+                np.round(box[:, 1] / height * dest_height), 0, dest_height
+            )
             boxes[index, :, :] = box.astype(np.int16)
             scores[index] = score
         return boxes, scores
@@ -234,7 +248,9 @@ class AverageMeter(object):
 
 
 class DetectionIoUEvaluator(object):
-    def __init__(self, is_output_polygon=False, iou_constraint=0.5, area_precision_constraint=0.5):
+    def __init__(
+        self, is_output_polygon=False, iou_constraint=0.5, area_precision_constraint=0.5
+    ):
         self.is_output_polygon = is_output_polygon
         self.iou_constraint = iou_constraint
         self.area_precision_constraint = area_precision_constraint
@@ -326,7 +342,11 @@ class DetectionIoUEvaluator(object):
         evaluationLog += (
             "GT polygons: "
             + str(len(gtPols))
-            + (" (" + str(len(gtDontCarePolsNum)) + " don't care)\n" if len(gtDontCarePolsNum) > 0 else "\n")
+            + (
+                " (" + str(len(gtDontCarePolsNum)) + " don't care)\n"
+                if len(gtDontCarePolsNum) > 0
+                else "\n"
+            )
         )
 
         for n in range(len(pred)):
@@ -342,7 +362,9 @@ class DetectionIoUEvaluator(object):
                     dontCarePol = gtPols[dontCarePol]
                     intersected_area = get_intersection(dontCarePol, detPol)
                     pdDimensions = Polygon(detPol).area
-                    precision = 0 if pdDimensions == 0 else intersected_area / pdDimensions
+                    precision = (
+                        0 if pdDimensions == 0 else intersected_area / pdDimensions
+                    )
                     if precision > self.area_precision_constraint:
                         detDontCarePolsNum.append(len(detPols) - 1)
                         break
@@ -350,7 +372,11 @@ class DetectionIoUEvaluator(object):
         evaluationLog += (
             "DET polygons: "
             + str(len(detPols))
-            + (" (" + str(len(detDontCarePolsNum)) + " don't care)\n" if len(detDontCarePolsNum) > 0 else "\n")
+            + (
+                " (" + str(len(detDontCarePolsNum)) + " don't care)\n"
+                if len(detDontCarePolsNum) > 0
+                else "\n"
+            )
         )
 
         if len(gtPols) > 0 and len(detPols) > 0:
@@ -387,7 +413,13 @@ class DetectionIoUEvaluator(object):
                             detMatched += 1
                             pairs.append({"gt": gtNum, "det": detNum})
                             detMatchedNums.append(detNum)
-                            evaluationLog += "Match GT #" + str(gtNum) + " with Det #" + str(detNum) + "\n"
+                            evaluationLog += (
+                                "Match GT #"
+                                + str(gtNum)
+                                + " with Det #"
+                                + str(detNum)
+                                + "\n"
+                            )
 
         numGtCare = len(gtPols) - len(gtDontCarePolsNum)
         numDetCare = len(detPols) - len(detDontCarePolsNum)
@@ -398,7 +430,11 @@ class DetectionIoUEvaluator(object):
             recall = float(detMatched) / numGtCare
             precision = 0 if numDetCare == 0 else float(detMatched) / numDetCare
 
-        hmean = 0 if (precision + recall) == 0 else 2.0 * precision * recall / (precision + recall)
+        hmean = (
+            0
+            if (precision + recall) == 0
+            else 2.0 * precision * recall / (precision + recall)
+        )
 
         matchedSum += detMatched
         numGlobalCareGt += numGtCare
@@ -431,15 +467,23 @@ class DetectionIoUEvaluator(object):
             numGlobalCareDet += result["detCare"]
             matchedSum += result["detMatched"]
 
-        methodRecall = 0 if numGlobalCareGt == 0 else float(matchedSum) / numGlobalCareGt
-        methodPrecision = 0 if numGlobalCareDet == 0 else float(matchedSum) / numGlobalCareDet
+        methodRecall = (
+            0 if numGlobalCareGt == 0 else float(matchedSum) / numGlobalCareGt
+        )
+        methodPrecision = (
+            0 if numGlobalCareDet == 0 else float(matchedSum) / numGlobalCareDet
+        )
         methodHmean = (
             0
             if methodRecall + methodPrecision == 0
             else 2 * methodRecall * methodPrecision / (methodRecall + methodPrecision)
         )
 
-        methodMetrics = {"precision": methodPrecision, "recall": methodRecall, "hmean": methodHmean}
+        methodMetrics = {
+            "precision": methodPrecision,
+            "recall": methodRecall,
+            "hmean": methodHmean,
+        }
 
         return methodMetrics
 
@@ -468,16 +512,23 @@ class QuadMetric:
         for polygons, pred_polygons, pred_scores, ignore_tags in zip(
             gt_polyons_batch, pred_polygons_batch, pred_scores_batch, ignore_tags_batch
         ):
-            gt = [dict(points=np.int64(polygons[i]), ignore=ignore_tags[i]) for i in range(len(polygons))]
+            gt = [
+                dict(points=np.int64(polygons[i]), ignore=ignore_tags[i])
+                for i in range(len(polygons))
+            ]
             if self.is_output_polygon:
-                pred = [dict(points=pred_polygons[i]) for i in range(len(pred_polygons))]
+                pred = [
+                    dict(points=pred_polygons[i]) for i in range(len(pred_polygons))
+                ]
             else:
                 pred = []
                 # print(pred_polygons.shape)
                 for i in range(pred_polygons.shape[0]):
                     if pred_scores[i] >= box_thresh:
                         # print(pred_polygons[i,:,:].tolist())
-                        pred.append(dict(points=pred_polygons[i, :, :].astype(np.int64)))
+                        pred.append(
+                            dict(points=pred_polygons[i, :, :].astype(np.int64))
+                        )
                 # pred = [dict(points=pred_polygons[i,:,:].tolist()) if pred_scores[i] >= box_thresh for i in range(pred_polygons.shape[0])]
             results.append(self.evaluator.evaluate_image(gt, pred))
         return results
@@ -486,10 +537,17 @@ class QuadMetric:
         return self.measure(batch, output, box_thresh)
 
     def evaluate_measure(self, batch, output):
-        return self.measure(batch, output), np.linspace(0, batch["image"].shape[0]).tolist()
+        return (
+            self.measure(batch, output),
+            np.linspace(0, batch["image"].shape[0]).tolist(),
+        )
 
     def gather_measure(self, raw_metrics):
-        raw_metrics = [image_metrics for batch_metrics in raw_metrics for image_metrics in batch_metrics]
+        raw_metrics = [
+            image_metrics
+            for batch_metrics in raw_metrics
+            for image_metrics in batch_metrics
+        ]
 
         result = self.evaluator.combine_results(raw_metrics)
 
@@ -499,7 +557,9 @@ class QuadMetric:
 
         precision.update(result["precision"], n=len(raw_metrics))
         recall.update(result["recall"], n=len(raw_metrics))
-        fmeasure_score = 2 * precision.val * recall.val / (precision.val + recall.val + 1e-8)
+        fmeasure_score = (
+            2 * precision.val * recall.val / (precision.val + recall.val + 1e-8)
+        )
         fmeasure.update(fmeasure_score)
 
         return {"precision": precision, "recall": recall, "fmeasure": fmeasure}
@@ -521,7 +581,9 @@ def shrink_polygon_pyclipper(polygon, shrink_ratio):
     import pyclipper
 
     polygon_shape = Polygon(polygon)
-    distance = polygon_shape.area * (1 - np.power(shrink_ratio, 2)) / polygon_shape.length
+    distance = (
+        polygon_shape.area * (1 - np.power(shrink_ratio, 2)) / polygon_shape.length
+    )
     subject = [tuple(l) for l in polygon]
     padding = pyclipper.PyclipperOffset()
     padding.AddPath(subject, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
@@ -540,7 +602,10 @@ class MakeShrinkMap:
     """
 
     def __init__(self, min_text_size=4, shrink_ratio=0.4, shrink_type="pyclipper"):
-        shrink_func_dict = {"py": shrink_polygon_py, "pyclipper": shrink_polygon_pyclipper}
+        shrink_func_dict = {
+            "py": shrink_polygon_py,
+            "pyclipper": shrink_polygon_pyclipper,
+        }
         self.shrink_func = shrink_func_dict[shrink_type]
         self.min_text_size = min_text_size
         self.shrink_ratio = shrink_ratio
@@ -638,7 +703,11 @@ class MakeBorderMap:
         polygon_shape = Polygon(polygon)
         if polygon_shape.area <= 0:
             return
-        distance = polygon_shape.area * (1 - np.power(self.shrink_ratio, 2)) / polygon_shape.length
+        distance = (
+            polygon_shape.area
+            * (1 - np.power(self.shrink_ratio, 2))
+            / polygon_shape.length
+        )
         subject = [tuple(l) for l in polygon]
         padding = pyclipper.PyclipperOffset()
         padding.AddPath(subject, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
@@ -656,8 +725,12 @@ class MakeBorderMap:
         polygon[:, 0] = polygon[:, 0] - xmin
         polygon[:, 1] = polygon[:, 1] - ymin
 
-        xs = np.broadcast_to(np.linspace(0, width - 1, num=width).reshape(1, width), (height, width))
-        ys = np.broadcast_to(np.linspace(0, height - 1, num=height).reshape(height, 1), (height, width))
+        xs = np.broadcast_to(
+            np.linspace(0, width - 1, num=width).reshape(1, width), (height, width)
+        )
+        ys = np.broadcast_to(
+            np.linspace(0, height - 1, num=height).reshape(height, 1), (height, width)
+        )
 
         distance_map = np.zeros((polygon.shape[0], height, width), dtype=np.float32)
         for i in range(polygon.shape[0]):
@@ -673,7 +746,8 @@ class MakeBorderMap:
         canvas[ymin_valid : ymax_valid + 1, xmin_valid : xmax_valid + 1] = np.fmax(
             1
             - distance_map[
-                ymin_valid - ymin : ymax_valid - ymax + height, xmin_valid - xmin : xmax_valid - xmax + width
+                ymin_valid - ymin : ymax_valid - ymax + height,
+                xmin_valid - xmin : xmax_valid - xmax + width,
             ],
             canvas[ymin_valid : ymax_valid + 1, xmin_valid : xmax_valid + 1],
         )
@@ -688,7 +762,9 @@ class MakeBorderMap:
         height, width = xs.shape[:2]
         square_distance_1 = np.square(xs - point_1[0]) + np.square(ys - point_1[1])
         square_distance_2 = np.square(xs - point_2[0]) + np.square(ys - point_2[1])
-        square_distance = np.square(point_1[0] - point_2[0]) + np.square(point_1[1] - point_2[1])
+        square_distance = np.square(point_1[0] - point_2[0]) + np.square(
+            point_1[1] - point_2[1]
+        )
 
         cosin = (square_distance - square_distance_1 - square_distance_2) / (
             2 * np.sqrt(square_distance_1 * square_distance_2)
@@ -696,19 +772,47 @@ class MakeBorderMap:
         square_sin = 1 - np.square(cosin)
         square_sin = np.nan_to_num(square_sin)
 
-        result = np.sqrt(square_distance_1 * square_distance_2 * square_sin / square_distance)
-        result[cosin < 0] = np.sqrt(np.fmin(square_distance_1, square_distance_2))[cosin < 0]
+        result = np.sqrt(
+            square_distance_1 * square_distance_2 * square_sin / square_distance
+        )
+        result[cosin < 0] = np.sqrt(np.fmin(square_distance_1, square_distance_2))[
+            cosin < 0
+        ]
         return result
 
     def extend_line(self, point_1, point_2, result):
         ex_point_1 = (
-            int(round(point_1[0] + (point_1[0] - point_2[0]) * (1 + self.shrink_ratio))),
-            int(round(point_1[1] + (point_1[1] - point_2[1]) * (1 + self.shrink_ratio))),
+            int(
+                round(point_1[0] + (point_1[0] - point_2[0]) * (1 + self.shrink_ratio))
+            ),
+            int(
+                round(point_1[1] + (point_1[1] - point_2[1]) * (1 + self.shrink_ratio))
+            ),
         )
-        cv2.line(result, tuple(ex_point_1), tuple(point_1), 4096.0, 1, lineType=cv2.LINE_AA, shift=0)
+        cv2.line(
+            result,
+            tuple(ex_point_1),
+            tuple(point_1),
+            4096.0,
+            1,
+            lineType=cv2.LINE_AA,
+            shift=0,
+        )
         ex_point_2 = (
-            int(round(point_2[0] + (point_2[0] - point_1[0]) * (1 + self.shrink_ratio))),
-            int(round(point_2[1] + (point_2[1] - point_1[1]) * (1 + self.shrink_ratio))),
+            int(
+                round(point_2[0] + (point_2[0] - point_1[0]) * (1 + self.shrink_ratio))
+            ),
+            int(
+                round(point_2[1] + (point_2[1] - point_1[1]) * (1 + self.shrink_ratio))
+            ),
         )
-        cv2.line(result, tuple(ex_point_2), tuple(point_2), 4096.0, 1, lineType=cv2.LINE_AA, shift=0)
+        cv2.line(
+            result,
+            tuple(ex_point_2),
+            tuple(point_2),
+            4096.0,
+            1,
+            lineType=cv2.LINE_AA,
+            shift=0,
+        )
         return ex_point_1, ex_point_2

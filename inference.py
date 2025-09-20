@@ -5,7 +5,7 @@ import torch
 import argparse
 from PIL import Image
 from tqdm import tqdm
-from img_utils import imread, replace_text_with_translation, get_img_hash
+from img_utils import imread, replace_text_with_translation
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 
 from text_detector import TextDetector
@@ -51,9 +51,15 @@ def extract_text(img_path, blk_list, ocr_model, processor, tokenizer):
     return texts, text_boxes
 
 
-def driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, model_path, target_language):
+def driver(input_dir, temp_dir, output_dir, config, target_language):
+    ocr_model_id = config["ocr_model"]
+    model_path = config["text_detection_model_path"]
+    llm_name = config["llm_name"]
+    font_path = config["font_path"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    det_model = TextDetector(model_path=model_path, input_size=1024, device=device, act="leaky")
+    det_model = TextDetector(
+        model_path=model_path, input_size=1024, device=device, act="leaky"
+    )
     processor = ViTImageProcessor.from_pretrained(ocr_model_id)
     tokenizer = AutoTokenizer.from_pretrained(ocr_model_id)
     ocr_model = VisionEncoderDecoderModel.from_pretrained(ocr_model_id)
@@ -62,19 +68,10 @@ def driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, m
     if not os.path.exists(temp_dir):
         os.mkdir(temp_dir)
 
-    with open("computed.json") as f:
-        computed = json.load(f)
-
     img_paths = os.listdir(input_dir)
     for img_name in tqdm(img_paths):
         img_path = os.path.join(input_dir, img_name)
         out_path = os.path.join(output_dir, img_name)
-
-        img_hash = get_img_hash(img_path)
-
-        if img_hash in computed:
-            # TODO Reusing previously computed data
-            pass
 
         # Read image
         img = imread(img_path)
@@ -86,16 +83,22 @@ def driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, m
         cleaned_file_path = clean_page(img_path, temp_dir, blk_list, mask_refined)
 
         # Extract texts from the bounding boxes
-        texts, text_boxes = extract_text(img_path, blk_list, ocr_model, processor, tokenizer)
-
-        # Translate all the texts extracted from the page
-        context = "\n".join(texts)
-        # page_context = get_page_context(img_path)
-        page_context = ""  # TODO remove page context
-        translated_texts = [translate(text, llm_name, context, page_context, target_language) for text in texts]
+        texts, text_boxes = extract_text(
+            img_path, blk_list, ocr_model, processor, tokenizer
+        )
 
         # Replace original text with the translated ones
-        translated_image = replace_text_with_translation(cleaned_file_path, font_path, translated_texts, text_boxes)
+        translations = []
+        context = "\n\n".join(texts)
+        for text, text_box in zip(texts, text_boxes):
+            translated = translate(text, llm_name, context=context)
+            translations.append(
+                {"original": text, "translated": translated, "polygon": text_box}
+            )
+
+        translated_image = replace_text_with_translation(
+            cleaned_file_path, font_path, translations
+        )
         translated_image.save(out_path)
 
 
@@ -103,14 +106,24 @@ def main():
     parser = argparse.ArgumentParser(description="Inputs to translate")
     parser.add_argument("--input-dir", type=str, help="the directory containing images")
 
-    parser.add_argument("--output-dir", type=str, help="the directory to which translated images are stored")
-
     parser.add_argument(
-        "--target-lang", type=str, help="the directory to which translated images are stored", default="English"
+        "--output-dir",
+        type=str,
+        help="the directory to which translated images are stored",
     )
 
     parser.add_argument(
-        "--temp-dir", type=str, help="the directory to which translated images are stored", default="./temp"
+        "--target-lang",
+        type=str,
+        help="the directory to which translated images are stored",
+        default="English",
+    )
+
+    parser.add_argument(
+        "--temp-dir",
+        type=str,
+        help="the directory to which translated images are stored",
+        default="./temp",
     )
 
     args = parser.parse_args()
@@ -121,13 +134,9 @@ def main():
     input_dir = args.input_dir
     output_dir = args.output_dir
     temp_dir = args.temp_dir
-    ocr_model_id = config["ocr_model"]
-    model_path = config["text_detection_model_path"]
-    llm_name = config["llm_name"]
-    font_path = config["font_path"]
     target_language = args.target_lang
 
-    driver(input_dir, temp_dir, output_dir, ocr_model_id, llm_name, font_path, model_path, target_language)
+    driver(input_dir, temp_dir, output_dir, config, target_language)
 
 
 if __name__ == "__main__":

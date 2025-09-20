@@ -9,11 +9,16 @@ def set_logging(name=None, verbose=True):
         logging.root.removeHandler(handler)
     # Sets level and returns logger
     rank = int(os.getenv("RANK", -1))  # rank in world for Multi-GPU trainings
-    logging.basicConfig(format="%(message)s", level=logging.INFO if (verbose and rank in (-1, 0)) else logging.WARNING)
+    logging.basicConfig(
+        format="%(message)s",
+        level=logging.INFO if (verbose and rank in (-1, 0)) else logging.WARNING,
+    )
     return logging.getLogger(name)
 
 
-LOGGER = set_logging(__name__)  # define globally (used in train.py, val.py, detect.py, etc.)
+LOGGER = set_logging(
+    __name__
+)  # define globally (used in train.py, val.py, detect.py, etc.)
 
 LOGGERS = ("csv", "tb", "wandb")
 
@@ -38,7 +43,12 @@ class Loggers:
             if hyp["logger"]["run_id"] == "":
                 self.wandb = wandb.init(project=project, config=hyp, resume="allow")
             else:
-                self.wandb = wandb.init(project=project, config=hyp, resume="must", id=hyp["logger"]["run_id"])
+                self.wandb = wandb.init(
+                    project=project,
+                    config=hyp,
+                    resume="must",
+                    id=hyp["logger"]["run_id"],
+                )
         elif self.type == LOGGER_TENSORBOARD:
             from torch.utils.tensorboard import SummaryWriter
 
@@ -61,5 +71,9 @@ class Loggers:
     def on_model_save(self, last, epoch, final_epoch, best_fitness, fi):
         # Callback runs on model save event
         if self.wandb:
-            if ((epoch + 1) % self.opt.save_period == 0 and not final_epoch) and self.opt.save_period != -1:
-                self.wandb.log_model(last.parent, self.opt, epoch, fi, best_model=best_fitness == fi)
+            if (
+                (epoch + 1) % self.opt.save_period == 0 and not final_epoch
+            ) and self.opt.save_period != -1:
+                self.wandb.log_model(
+                    last.parent, self.opt, epoch, fi, best_model=best_fitness == fi
+                )

@@ -1,101 +1,138 @@
 import re
 import jaconv
-import base64
-from ollama import chat
-from ollama import ChatResponse
+import unicodedata
+from ollama import chat, ChatResponse
 
 # Fixed System Prompt
-system_prompt = """You are a manga translator for one of the biggest publishers in the world. You will be given the entire context of a page or chapter and then will be asked to translate a specific text which is part of that context. You must use the context to provide an accurate translation of the text. Do not translate the context in one go. Ensure that the translated text remains meaningful taking the overall context into account. Ensure the tenses and proverbs are consistent across the translation. Use a casual tone and eliminate redundancy in the translation.
+SYSTEM_PROMPT = """
+You are a manga translator for one of the biggest publishers in the world. 
+You will be given the entire context of a page or chapter and then will be asked to translate a specific text which is part of that context. 
+You must use the context to provide an accurate translation of the text. 
+Do not translate the context in one go. Ensure that the translated text remains meaningful taking the overall context into account.
+Ensure the tenses and proverbs are consistent across the translation.
 
 CRITICAL OUTPUT RULES:
 - Output ONLY the translated text, nothing else
-- Do not repeat words or phrases multiple times
-- Provide a single, complete translation
-- Stop after completing the translation
-- Do not include explanations, notes, or commentary
-- Do not repeat any part of the translation
-- The onomatopoeia needs to be translated appropriately
-- Keep emoji's and english texts in the given text as it is while translating
-- Do not ask for more context than given.
-
-Only translate the text given between the <text> tags. Your response should be concise and complete."""
-
-
-def get_formatted_user_prompt(context: str, page_context: str, text: str, target_language: str):
-    user_prompt = f"""Translate this Japanese manga text to {target_language}.
-
-    Context: <context>{context}</context>
-
-    Text to translate: <text>{text}</text>
-
-    Provide the complete translation in {target_language}. Do not repeat words or phrases."""
-    return user_prompt
+- DO NOT include explanations, notes, or commentary about the translation
+- The onomatopoeia needs to be translated according to how it sounds, you may use romanji here 
+- Similarly translate, voices for suprises like for example え？ being "Eh?" or "Huh"?
+- If the given text is a single unfinished word that you can't make of, then return the romanji
+- Keep emoji's in the given text as it is while translating
+- Use appropriate tone for translation as understood from the context
+- The translated text is going to replace the original text, hence the length of the translation SHOULD be close the number of characters inside <text> tags
+- Only translate the text given between the <text> tags. Your response should be concise and complete.
+""".strip()
 
 
-def post_process(text):
+def is_japanese_char(char: str) -> bool:
+    """Check if character is Hiragana, Katakana, or common Kanji."""
+    code = ord(char)
+    return (
+        0x3040 <= code <= 0x309F  # Hiragana
+        or 0x30A0 <= code <= 0x30FF  # Katakana
+        or 0x4E00 <= code <= 0x9FFF  # Common Kanji
+    )
+
+
+def contains_japanese(text: str) -> bool:
+    """Return True if any character in text is Japanese."""
+    return any(is_japanese_char(char) for char in text)
+
+
+def get_formatted_user_prompt(context: str, text: str, target_language: str) -> str:
+    return f"""Translate this Japanese manga text to {target_language}.
+
+Context: <context>{context}</context>
+
+Text to translate: <text>{text}</text>
+
+The translation for {text} in {target_language} is:
+""".strip()
+
+
+def clean_translated_text(text: str) -> str:
+    """Clean model output: remove newlines, XML tags, quotes, and prefixes."""
+    text = re.sub(r"\n+", " ", text)
+    text = re.sub(r"<.*?>", "", text)  # Remove XML/HTML tags
+    text = re.sub(r'^"|"$', "", text)  # Strip surrounding quotes
+    if text.lower().startswith("translation:"):
+        text = text[len("translation:") :].lstrip(" :").strip()
+    return text.strip()
+
+
+def post_process(text: str) -> str:
+    """Post-process Japanese text: normalize spacing, ellipses, and half-width chars."""
     text = "".join(text.split())
     text = text.replace("…", "...")
-    text = re.sub("[・.]{2,}", lambda x: (x.end() - x.start()) * ".", text)
+    text = re.sub(r"[・.]{2,}", lambda m: "." * len(m.group()), text)
     text = jaconv.h2z(text, ascii=True, digit=True)
     return text
 
 
-# def encode_image(image_path):
-#   with open(image_path, "rb") as image_file:
-#     return base64.b64encode(image_file.read()).decode('utf-8')
+def call_llm(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.0,
+    num_ctx: int = 128,
+    frequency_penalty: float = 0.5,
+    presence_penalty: float = 0.2,
+    stop: list = None,
+) -> str:
+    if stop is None:
+        stop = ["\n\n", "---", "Note:"]
 
-# def get_page_context(img_path: str) -> str:
-#     return ""
-#     system_prompt = """
-#     You will be given a page from a manga, you have to scan through the page and give a descriptive context about what happens in the page.
-#     This description is extremely essential to help the translator. The translator does not have access to the page and only has access to the text
-#     in the page. So the page description given by you will be used by the Translator agent to generate accurate translations.
-#     Generate the description in less than 500 words.
-#     """
-
-#     base64_img = encode_image(img_path)
-#     response = chat(
-#         model='gemma3',
-#         messages=[
-#             {
-#             "role": "system",
-#             "content": system_prompt,
-#             },
-#             {
-#                 'role': 'user',
-#                 'content': 'Generate the description on the events happening in the given page of manga',
-#                 'images': [base64_img],
-#             },
-#         ],
-#     )
-#     print(response['message']['content'])
-#     return response.message.content
-
-
-def translate(text: str, model: str, context: str, page_context: str, target_language: str = "English") -> str:
     response: ChatResponse = chat(
         model=model,
         messages=[
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": get_formatted_user_prompt(context, page_context, text, target_language),
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
         options={
-            "temperature": 0.0,
-            "num_ctx": 128,
+            "temperature": temperature,
+            "num_ctx": num_ctx,
             "penalize_newline": True,
-            "frequency_penalty": 0.5,
-            "presence_penalty": 0.2,
-            # "repeat_penalty": 1.1,
-            "stop": ["\n\n", "---", "Note:", "Translation:"],
+            "frequency_penalty": frequency_penalty,
+            "presence_penalty": presence_penalty,
+            "stop": stop,
         },
         stream=False,
     )
-    text = response.message.content
-    cleaned_text = re.sub(r"\n+", " ", text)
+
+    return response.message.content
+
+
+def translate(
+    text: str, model: str, context: str, target_language: str = "English"
+) -> str:
+    # Normalize non-Japanese text early
+    if not contains_japanese(text):
+        return unicodedata.normalize("NFKC", text)
+
+    # Main translation call
+    user_prompt = get_formatted_user_prompt(context, text, target_language)
+    cleaned_text = call_llm(model, SYSTEM_PROMPT, user_prompt)
+    cleaned_text = clean_translated_text(cleaned_text)
+
+    # Debug prints (optional — comment out in production)
+    # print(f"Input: {text}")
+    # print(f"Output: {cleaned_text}\n")
+
+    # Fallback if translation failed (contains trigger words or Japanese)
+    if (
+        "translat" in cleaned_text.lower()
+        or "onomatopoeia" in cleaned_text.lower()
+        or contains_japanese(cleaned_text)
+    ):
+        cleaned_text = fallback_translation(text, model, target_language)
+
     return cleaned_text
+
+
+def fallback_translation(text: str, model: str, target_language: str) -> str:
+    """Fallback: act as Google Translate for direct Japanese → target translation."""
+    system_prompt = f"Your role is to act as google translate. Translate the given Japanese text into {target_language}. Output ONLY the translation."
+    user_prompt = f"Translate to {target_language}: {text}"
+
+    fallback_translation = call_llm(model, system_prompt, user_prompt)
+    return clean_translated_text(fallback_translation)

@@ -1,4 +1,5 @@
 import cv2
+import math
 import torch
 import hashlib
 import numpy as np
@@ -6,6 +7,28 @@ from typing import Union
 from utils.yolov5_utils import non_max_suppression
 from utils.imgproc_utils import letterbox
 from PIL import Image, ImageDraw, ImageFont
+
+
+def draw_wrapped_text(image, draw, polygon, text, font_path, font_scale=1.2):
+    x_min, y_min, x_max, y_max = polygon
+
+    box_width = x_max - x_min
+    box_width = int(0.9 * box_width)
+    box_height = y_max - y_min
+    box_height = int(0.9 * box_height)
+
+    font_size, wrapped = find_max_fontsize(
+        text, draw, font_path, box_width, box_height, min_size=4, max_size=20
+    )
+
+    font = ImageFont.truetype(font_path, math.ceil(font_size * font_scale))
+    bbox = draw.textbbox((0, 0), wrapped, font=font)
+    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    x = x_min + (box_width - text_w) / 2
+    y = y_min + (box_height - text_h) / 2
+    background_color = get_background_color(image, x_min, y_min, x_max, y_max)
+    fill = get_text_fill_color(background_color)
+    draw.text((x, y), wrapped, font=font, fill=fill, align="center")
 
 
 def get_img_hash(img_path: str) -> str:
@@ -18,10 +41,14 @@ def imread(imgpath, read_type=cv2.IMREAD_COLOR):
     return cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
 
 
-def preprocess_img(img, input_size=(1024, 1024), device="cpu", bgr2rgb=True, half=False, to_tensor=True):
+def preprocess_img(
+    img, input_size=(1024, 1024), device="cpu", bgr2rgb=True, half=False, to_tensor=True
+):
     if bgr2rgb:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img_in, ratio, (dw, dh) = letterbox(img, new_shape=input_size, auto=False, stride=64)
+    img_in, ratio, (dw, dh) = letterbox(
+        img, new_shape=input_size, auto=False, stride=64
+    )
     if to_tensor:
         img_in = img_in.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img_in = np.array([np.ascontiguousarray(img_in)]).astype(np.float32) / 255
@@ -104,7 +131,11 @@ def get_background_color(image, x_min, y_min, x_max, y_max):
 
 def get_text_fill_color(background_color):
     # Calculate the luminance of the background color
-    luminance = (0.299 * background_color[0] + 0.587 * background_color[1] + 0.114 * background_color[2]) / 255
+    luminance = (
+        0.299 * background_color[0]
+        + 0.587 * background_color[1]
+        + 0.114 * background_color[2]
+    ) / 255
 
     # Determine the text color based on the background luminance
     if luminance > 0.5:
@@ -113,166 +144,65 @@ def get_text_fill_color(background_color):
         return "white"  # Use white text for dark backgrounds
 
 
-def get_text_width(text, font):
-    left, top, right, bottom = font.getbbox(text.strip())
-    width = right - left
-    return width
+def wrap_text(text, font, box_w):
+    """Wrap text into lines that fit inside box_w, with hyphenation if needed."""
+    words = text.split()
+    lines, line = [], ""
 
-
-def get_text_height(text, font):
-    left, top, right, bottom = font.getbbox(text.strip())
-    height = bottom - top
-    return height
-
-
-def text_wrap(text, font, max_width):
-    lines = []
-    width = get_text_width(text, font)
-    if width <= max_width:
-        lines.append(text)
-    else:
-        words = text.split()
-        line = ""
-        for i, word in enumerate(words):
-            word = word.strip()
-            width = get_text_width(word, font)
-            temp_line = line + " " + word
-            if get_text_width(temp_line, font) > max_width:
+    for word in words:
+        trial = (line + " " + word).strip()
+        if font.getlength(trial) <= box_w:
+            line = trial
+        else:
+            if line:  # push previous line
                 lines.append(line)
-                line = word
+            # check if single word itself is too long → hyphenate
+            if font.getlength(word) > box_w:
+                partial = ""
+                for ch in word:
+                    if font.getlength(partial + ch + "-") <= box_w:
+                        partial += ch
+                    else:
+                        lines.append(partial + "-")
+                        partial = ch
+                line = partial
             else:
-                line = line + " " + word
-        if line:
-            lines.append(line)
-    lines = [line.strip() for line in lines if line]
-    return lines
+                line = word
+    if line:
+        lines.append(line)
+    return "\n".join(lines)
 
 
-def find_text_box_coordinates(max_line_width: int, total_line_height: int, center_x: int, center_y: int):
-    text_box_x_min = center_x - max_line_width // 2 + 1
-    text_box_y_min = center_y - total_line_height // 2 + 1
-
-    text_box_x_max = center_x + max_line_width // 2 + 1
-    text_box_y_max = center_y + total_line_height // 2 + 1
-
-    return text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
-
-
-def is_out_of_bounds(x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max):
-    if (text_box_x_min - x_min) < -5:
-        return True
-    if (text_box_y_min - y_min) < -5:
-        return True
-    if (text_box_x_max - x_max) > 5:
-        return True
-    if (text_box_y_max > y_max) > 5:
-        return True
-    return False
+def fits_in_box(text, draw, font, box_w, box_h):
+    """Check if wrapped text fits inside box with given font."""
+    wrapped = wrap_text(text, font, box_w)
+    # left, top, right, bottom = font.getbbox_multiline(wrapped)
+    left, top, right, bottom = draw.textbbox((0, 0), wrapped, font=font)
+    text_w, text_h = right - left, bottom - top
+    return text_w <= box_w and text_h <= box_h, wrapped
 
 
-def determine_font_size(
-    font_path: str,
-    text: str,
-    max_width: int,
-    max_height: int,
-    center_x: int,
-    center_y: int,
-    x_min: int,
-    y_min: int,
-    x_max: int,
-    y_max: int,
-    size: int = 16,
-    disable_increment: bool = False,
-):
-    font = ImageFont.truetype(font_path, size=size)
-    lines = text_wrap(text, font, max_width - 10)
-    max_line_width = max([get_text_width(line, font) for line in lines])
-    max_line_height = max([get_text_height(line, font) for line in lines])
-    total_line_height = max_line_height * (len(lines) + 1)
-    text_box_area = 2 * max_line_width * max_line_height
-    bounding_box_area = 2 * max_width * max_height
-
-    text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max = find_text_box_coordinates(
-        max_line_width, total_line_height, center_x, center_y
-    )
-
-    out_of_bounds = is_out_of_bounds(
-        x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
-    )
-    if size > 11 and size < 80:
-        if out_of_bounds:
-            size = determine_font_size(
-                font_path, text, max_width, max_height, center_x, center_y, x_min, y_min, x_max, y_max, size - 1, True
-            )
-
-        elif bounding_box_area / text_box_area > 16 and not disable_increment:
-            size = determine_font_size(
-                font_path,
-                text,
-                max_width,
-                max_height,
-                center_x,
-                center_y,
-                x_min,
-                y_min,
-                x_max,
-                y_max,
-                size + 1,
-                disable_increment,
-            )
-    return size
+def find_max_fontsize(text, draw, font_path, box_w, box_h, min_size=1, max_size=200):
+    """Find the largest font size where wrapped text fits inside box."""
+    best_size, best_wrapped = min_size, text
+    while min_size <= max_size:
+        mid = (min_size + max_size) // 2
+        font = ImageFont.truetype(font_path, mid)
+        fits, wrapped = fits_in_box(text, draw, font, box_w, box_h)
+        if fits:
+            best_size, best_wrapped = mid, wrapped
+            min_size = mid + 1  # try bigger
+        else:
+            max_size = mid - 1  # too big
+    return best_size, best_wrapped
 
 
-def replace_text_with_translation(image_path, font_path, translated_texts, text_boxes):
-    # Open the image
+def replace_text_with_translation(image_path, font_path, translations):
     image = Image.open(image_path)
     draw = ImageDraw.Draw(image)
-
-    x_pad, y_pad = 5, 5
-
-    # Replace each text box with translated text
-    for text_box, translated in zip(text_boxes, translated_texts):
-
-        # Set initial values
-        x_min, y_min = text_box[0], text_box[1]
-        x_max, y_max = text_box[2], text_box[3]
-
-        max_width = x_max - x_min - 2 * x_pad
-        max_height = y_max - y_min - 2 * y_pad
-
-        center_x, center_y = x_min + max_width // 2, y_min + max_height // 2
-
-        if not translated:
-            continue
-
-        # Load a font
-        font_size = determine_font_size(
-            font_path, translated, max_width, max_height, center_x, center_y, x_min, y_min, x_max, y_max
-        )
-        font = ImageFont.truetype(font_path, size=font_size)
-
-        lines = text_wrap(translated, font, max_width - 10)
-        max_line_width = max([get_text_width(line, font) for line in lines])
-        max_line_height = max([get_text_height(line, font) for line in lines])
-        total_line_height = max_line_height * (len(lines) + 1)
-
-        text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max = find_text_box_coordinates(
-            max_line_width, total_line_height, center_x, center_y
-        )
-
-        out_of_bounds = is_out_of_bounds(
-            x_min, y_min, x_max, y_max, text_box_x_min, text_box_y_min, text_box_x_max, text_box_y_max
-        )
-
-        # Find the most common color in the text region
-        background_color = get_background_color(image, x_min, y_min, x_max, y_max)
-
-        fill = get_text_fill_color(background_color)
-        x = x_min if out_of_bounds else text_box_x_min
-        y = y_min if out_of_bounds else text_box_y_min
-
-        for line in lines:
-            draw.text((x, y), line, fill=fill, font=font)
-            y = y + max_line_height + y_pad
-
+    for translation in translations:
+        polygon = translation["polygon"]
+        translated_text = translation["translated"]
+        if translated_text:
+            draw_wrapped_text(image, draw, polygon, translated_text, font_path)
     return image
