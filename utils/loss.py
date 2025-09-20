@@ -29,7 +29,9 @@ class BinaryDiceLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, predict, target):
-        assert predict.shape[0] == target.shape[0], "predict & target batch size don't match"
+        assert (
+            predict.shape[0] == target.shape[0]
+        ), "predict & target batch size don't match"
         predict = predict.contiguous().view(predict.shape[0], -1)
         target = target.contiguous().view(target.shape[0], -1)
 
@@ -72,7 +74,13 @@ class BalanceCrossEntropyLoss(nn.Module):
         self.negative_ratio = negative_ratio
         self.eps = eps
 
-    def forward(self, pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor, return_origin=False):
+    def forward(
+        self,
+        pred: torch.Tensor,
+        gt: torch.Tensor,
+        mask: torch.Tensor,
+        return_origin=False,
+    ):
         """
         Args:
             pred: shape :math:`(N, 1, H, W)`, the prediction of network
@@ -82,15 +90,21 @@ class BalanceCrossEntropyLoss(nn.Module):
         positive = (gt * mask).byte()
         negative = ((1 - gt) * mask).byte()
         positive_count = int(positive.float().sum())
-        negative_count = min(int(negative.float().sum()), int(positive_count * self.negative_ratio))
+        negative_count = min(
+            int(negative.float().sum()), int(positive_count * self.negative_ratio)
+        )
         # loss = nn.functional.binary_cross_entropy(pred, gt, reduction='none')
-        loss = nn.functional.binary_cross_entropy_with_logits(pred, gt, reduction="none")
+        loss = nn.functional.binary_cross_entropy_with_logits(
+            pred, gt, reduction="none"
+        )
         positive_loss = loss * positive.float()
         negative_loss = loss * negative.float()
         # negative_loss, _ = torch.topk(negative_loss.view(-1).contiguous(), negative_count)
         negative_loss, _ = negative_loss.view(-1).topk(negative_count)
 
-        balance_loss = (positive_loss.sum() + negative_loss.sum()) / (positive_count + negative_count + self.eps)
+        balance_loss = (positive_loss.sum() + negative_loss.sum()) / (
+            positive_count + negative_count + self.eps
+        )
 
         if return_origin:
             return balance_loss, loss
@@ -173,16 +187,26 @@ class DBLoss(nn.Module):
                 pred[:, 3, :, :], batch["shrink_map"], batch["shrink_mask"]
             ) + self.dice_loss(shrink_maps, batch["shrink_map"], batch["shrink_mask"])
         else:
-            loss_shrink_maps = self.dice_loss(shrink_maps, batch["shrink_map"], batch["shrink_mask"])
-
-        loss_threshold_maps = self.l1_loss(threshold_maps, batch["threshold_map"], batch["threshold_mask"])
-        metrics = dict(loss_shrink_maps=loss_shrink_maps, loss_threshold_maps=loss_threshold_maps)
-        if pred.size()[1] > 2:
-            loss_binary_maps = self.dice_loss(binary_maps, batch["shrink_map"], batch["shrink_mask"]) + self.bce_loss(
-                binary_maps, batch["shrink_map"], batch["shrink_mask"]
+            loss_shrink_maps = self.dice_loss(
+                shrink_maps, batch["shrink_map"], batch["shrink_mask"]
             )
+
+        loss_threshold_maps = self.l1_loss(
+            threshold_maps, batch["threshold_map"], batch["threshold_mask"]
+        )
+        metrics = dict(
+            loss_shrink_maps=loss_shrink_maps, loss_threshold_maps=loss_threshold_maps
+        )
+        if pred.size()[1] > 2:
+            loss_binary_maps = self.dice_loss(
+                binary_maps, batch["shrink_map"], batch["shrink_mask"]
+            ) + self.bce_loss(binary_maps, batch["shrink_map"], batch["shrink_mask"])
             metrics["loss_binary_maps"] = loss_binary_maps
-            loss_all = self.alpha * loss_shrink_maps + self.beta * loss_threshold_maps + loss_binary_maps
+            loss_all = (
+                self.alpha * loss_shrink_maps
+                + self.beta * loss_threshold_maps
+                + loss_binary_maps
+            )
             metrics["loss"] = loss_all
         else:
             metrics["loss"] = loss_shrink_maps

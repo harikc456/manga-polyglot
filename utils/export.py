@@ -24,12 +24,18 @@ class SiLU(nn.Module):  # export-friendly version of nn.SiLU()
 def concate_models(blk_weights, seg_weights, det_weights, save_path):
     textdetector_dict = dict()
     textdetector_dict["blk_det"] = torch.load(blk_weights, map_location="cpu")
-    textdetector_dict["text_seg"] = torch.load(seg_weights, map_location="cpu")["weights"]
-    textdetector_dict["text_det"] = torch.load(det_weights, map_location="cpu")["weights"]
+    textdetector_dict["text_seg"] = torch.load(seg_weights, map_location="cpu")[
+        "weights"
+    ]
+    textdetector_dict["text_det"] = torch.load(det_weights, map_location="cpu")[
+        "weights"
+    ]
     torch.save(textdetector_dict, save_path)
 
 
-def export_onnx(model, im, file, opset, train=False, simplify=True, dynamic=False, inplace=False):
+def export_onnx(
+    model, im, file, opset, train=False, simplify=True, dynamic=False, inplace=False
+):
     # YOLOv5 ONNX export
     f = file + ".onnx"
     for k, m in model.named_modules():
@@ -45,7 +51,9 @@ def export_onnx(model, im, file, opset, train=False, simplify=True, dynamic=Fals
         f,
         verbose=False,
         opset_version=opset,
-        training=torch.onnx.TrainingMode.TRAINING if train else torch.onnx.TrainingMode.EVAL,
+        training=(
+            torch.onnx.TrainingMode.TRAINING if train else torch.onnx.TrainingMode.EVAL
+        ),
         do_constant_folding=not train,
         input_names=["images"],
         output_names=["blk", "seg", "det"],
@@ -64,7 +72,9 @@ def export_onnx(model, im, file, opset, train=False, simplify=True, dynamic=Fals
     onnx.checker.check_model(model_onnx)  # check onnx model
 
     model_onnx, check = onnxsim.simplify(
-        model_onnx, dynamic_input_shape=dynamic, input_shapes={"images": list(im.shape)} if dynamic else None
+        model_onnx,
+        dynamic_input_shape=dynamic,
+        input_shapes={"images": list(im.shape)} if dynamic else None,
     )
     assert check, "assert check failed"
     onnx.save(model_onnx, f)

@@ -91,7 +91,15 @@ def rotate_polygons(center, polygons, rotation, new_center=None, to_int=True):
     return rotated
 
 
-def letterbox(im, new_shape=(640, 640), color=(0, 0, 0), auto=False, scaleFill=False, scaleup=True, stride=128):
+def letterbox(
+    im,
+    new_shape=(640, 640),
+    color=(0, 0, 0),
+    auto=False,
+    scaleFill=False,
+    scaleup=True,
+    stride=128,
+):
     # Resize and pad image while meeting stride-multiple constraints
     shape = im.shape[:2]  # current shape [height, width]
     if not isinstance(new_shape, tuple):
@@ -121,11 +129,15 @@ def letterbox(im, new_shape=(640, 640), color=(0, 0, 0), auto=False, scaleFill=F
         im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    im = cv2.copyMakeBorder(im, 0, dh, 0, dw, cv2.BORDER_CONSTANT, value=color)  # add border
+    im = cv2.copyMakeBorder(
+        im, 0, dh, 0, dw, cv2.BORDER_CONSTANT, value=color
+    )  # add border
     return im, ratio, (dw, dh)
 
 
-def resize_keepasp(im, new_shape=640, scaleup=True, interpolation=cv2.INTER_LINEAR, stride=None):
+def resize_keepasp(
+    im, new_shape=640, scaleup=True, interpolation=cv2.INTER_LINEAR, stride=None
+):
     shape = im.shape[:2]  # current shape [height, width]
 
     if new_shape is not None:
@@ -171,7 +183,14 @@ def expand_textwindow(img_size, xyxy, expand_r=8, shrink=False):
     return [x1, y1, x2, y2]
 
 
-def draw_connected_labels(num_labels, labels, stats, centroids, names="draw_connected_labels", skip_background=True):
+def draw_connected_labels(
+    num_labels,
+    labels,
+    stats,
+    centroids,
+    names="draw_connected_labels",
+    skip_background=True,
+):
     labdraw = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
     max_ind = 0
     if isinstance(num_labels, int):
@@ -181,7 +200,11 @@ def draw_connected_labels(num_labels, labels, stats, centroids, names="draw_conn
     for lab in num_labels:
         if skip_background and lab == 0:
             continue
-        randcolor = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+        randcolor = (
+            random.randint(0, 255),
+            random.randint(0, 255),
+            random.randint(0, 255),
+        )
         labdraw[np.where(labels == lab)] = randcolor
         maxr, minr = 0.5, 0.001
         maxw, maxh = stats[max_ind][2] * maxr, stats[max_ind][3] * maxr
@@ -200,7 +223,11 @@ def draw_connected_labels(num_labels, labels, stats, centroids, names="draw_conn
                 labdraw,
                 (int(centroids[lab][0]), int(centroids[lab][1])),
                 radius=5,
-                color=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)),
+                color=(
+                    random.randint(0, 255),
+                    random.randint(0, 255),
+                    random.randint(0, 255),
+                ),
                 thickness=-1,
             )
 

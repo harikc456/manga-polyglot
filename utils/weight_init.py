@@ -30,7 +30,15 @@ def uniform_init(module, a=0, b=1, bias=0):
         nn.init.constant_(module.bias, bias)
 
 
-def kaiming_init(module, a=0, is_rnn=False, mode="fan_in", nonlinearity="leaky_relu", bias=0, distribution="normal"):
+def kaiming_init(
+    module,
+    a=0,
+    is_rnn=False,
+    mode="fan_in",
+    nonlinearity="leaky_relu",
+    bias=0,
+    distribution="normal",
+):
     assert distribution in ["uniform", "normal"]
     if distribution == "uniform":
         if is_rnn:
@@ -38,9 +46,13 @@ def kaiming_init(module, a=0, is_rnn=False, mode="fan_in", nonlinearity="leaky_r
                 if "bias" in name:
                     nn.init.constant_(param, bias)
                 elif "weight" in name:
-                    nn.init.kaiming_uniform_(param, a=a, mode=mode, nonlinearity=nonlinearity)
+                    nn.init.kaiming_uniform_(
+                        param, a=a, mode=mode, nonlinearity=nonlinearity
+                    )
         else:
-            nn.init.kaiming_uniform_(module.weight, a=a, mode=mode, nonlinearity=nonlinearity)
+            nn.init.kaiming_uniform_(
+                module.weight, a=a, mode=mode, nonlinearity=nonlinearity
+            )
 
     else:
         if is_rnn:
@@ -48,9 +60,13 @@ def kaiming_init(module, a=0, is_rnn=False, mode="fan_in", nonlinearity="leaky_r
                 if "bias" in name:
                     nn.init.constant_(param, bias)
                 elif "weight" in name:
-                    nn.init.kaiming_normal_(param, a=a, mode=mode, nonlinearity=nonlinearity)
+                    nn.init.kaiming_normal_(
+                        param, a=a, mode=mode, nonlinearity=nonlinearity
+                    )
         else:
-            nn.init.kaiming_normal_(module.weight, a=a, mode=mode, nonlinearity=nonlinearity)
+            nn.init.kaiming_normal_(
+                module.weight, a=a, mode=mode, nonlinearity=nonlinearity
+            )
 
     if not is_rnn and hasattr(module, "bias") and module.bias is not None:
         nn.init.constant_(module.bias, bias)
@@ -62,8 +78,13 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
         center = factor - 1
     else:
         center = factor - 0.5
-    og = (torch.arange(kernel_size).reshape(-1, 1), torch.arange(kernel_size).reshape(1, -1))
-    filt = (1 - torch.abs(og[0] - center) / factor) * (1 - torch.abs(og[1] - center) / factor)
+    og = (
+        torch.arange(kernel_size).reshape(-1, 1),
+        torch.arange(kernel_size).reshape(1, -1),
+    )
+    filt = (1 - torch.abs(og[0] - center) / factor) * (
+        1 - torch.abs(og[1] - center) / factor
+    )
     weight = torch.zeros((in_channels, out_channels, kernel_size, kernel_size))
     weight[range(in_channels), range(out_channels), :, :] = filt
     return weight

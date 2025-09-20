@@ -10,7 +10,17 @@ IMG_EXT = [".bmp", ".jpg", ".png", ".jpeg"]
 
 NP_BOOL_TYPES = np.bool
 NP_FLOAT_TYPES = (np.float16, np.float32, np.float64)
-NP_INT_TYPES = (np.int8, np.int16, np.int32, np.int64, np.uint, np.uint8, np.uint16, np.uint32, np.uint64)
+NP_INT_TYPES = (
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+)
 
 
 # https://stackoverflow.com/questions/26646362/numpy-array-is-not-json-serializable
@@ -42,7 +52,9 @@ def find_all_imgs(img_dir, abs_path=False):
     return imglist
 
 
-imread = lambda imgpath, read_type=cv2.IMREAD_COLOR: cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
+imread = lambda imgpath, read_type=cv2.IMREAD_COLOR: cv2.imdecode(
+    np.fromfile(imgpath, dtype=np.uint8), read_type
+)
 # def imread(imgpath, read_type=cv2.IMREAD_COLOR):
 #     img = cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
 #     return img

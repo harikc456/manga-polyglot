@@ -32,7 +32,9 @@ def minxor_thresh(threshed, mask, dilate=False):
     neg_threshed = 255 - threshed
     e_size = 1
     if dilate:
-        element = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * e_size + 1, 2 * e_size + 1), (e_size, e_size))
+        element = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (2 * e_size + 1, 2 * e_size + 1), (e_size, e_size)
+        )
         neg_threshed = cv2.dilate(neg_threshed, element, iterations=1)
         threshed = cv2.dilate(threshed, element, iterations=1)
     neg_xor_sum = cv2.bitwise_xor(neg_threshed, mask).sum()
@@ -61,7 +63,9 @@ def get_topk_masklist(im_grey, pred_mask):
     if len(im_grey.shape) == 3 and im_grey.shape[-1] == 3:
         im_grey = cv2.cvtColor(im_grey, cv2.COLOR_BGR2GRAY)
     msk = np.ascontiguousarray(pred_mask)
-    candidate_grey_px = im_grey[np.where(cv2.erode(msk, np.ones((3, 3), np.uint8), iterations=1) > 127)]
+    candidate_grey_px = im_grey[
+        np.where(cv2.erode(msk, np.ones((3, 3), np.uint8), iterations=1) > 127)
+    ]
     bin, his = np.histogram(candidate_grey_px, bins=255)
     topk_color = get_topk_color(his, bin, color_var=10, k=3)
     color_range = 30
@@ -97,7 +101,9 @@ def merge_mask_list(
 
     if pred_thresh > 0:
         e_size = 1
-        element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * e_size + 1, 2 * e_size + 1), (e_size, e_size))
+        element = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * e_size + 1, 2 * e_size + 1), (e_size, e_size)
+        )
         pred_mask = cv2.erode(pred_mask, element, iterations=1)
         _, pred_mask = cv2.threshold(pred_mask, 60, 255, cv2.THRESH_BINARY)
     connectivity = 8
@@ -118,14 +124,18 @@ def merge_mask_list(
                 tmp_merged[label_coordinates] = 255
                 tmp_merged = cv2.bitwise_or(mask_merged[y1:y2, x1:x2], tmp_merged)
                 xor_merged = cv2.bitwise_xor(tmp_merged, pred_mask[y1:y2, x1:x2]).sum()
-                xor_origin = cv2.bitwise_xor(mask_merged[y1:y2, x1:x2], pred_mask[y1:y2, x1:x2]).sum()
+                xor_origin = cv2.bitwise_xor(
+                    mask_merged[y1:y2, x1:x2], pred_mask[y1:y2, x1:x2]
+                ).sum()
                 if xor_merged < xor_origin:
                     mask_merged[y1:y2, x1:x2] = tmp_merged
 
     if refine_mode == REFINEMASK_INPAINT:
         mask_merged = cv2.dilate(mask_merged, np.ones((3, 3), np.uint8), iterations=1)
     # fill holes
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(255 - mask_merged, connectivity, cv2.CV_16U)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        255 - mask_merged, connectivity, cv2.CV_16U
+    )
     sorted_area = np.sort(stats[:, -1])
     if len(sorted_area) > 1:
         area_thresh = sorted_area[-2]
@@ -141,7 +151,9 @@ def merge_mask_list(
             tmp_merged[label_coordinates] = 255
             tmp_merged = cv2.bitwise_or(mask_merged[y1:y2, x1:x2], tmp_merged)
             xor_merged = cv2.bitwise_xor(tmp_merged, pred_mask[y1:y2, x1:x2]).sum()
-            xor_origin = cv2.bitwise_xor(mask_merged[y1:y2, x1:x2], pred_mask[y1:y2, x1:x2]).sum()
+            xor_origin = cv2.bitwise_xor(
+                mask_merged[y1:y2, x1:x2], pred_mask[y1:y2, x1:x2]
+            ).sum()
             if xor_merged < xor_origin:
                 mask_merged[y1:y2, x1:x2] = tmp_merged
     return mask_merged
@@ -156,7 +168,9 @@ def refine_undetected_mask(
 ):
     mask_pred[np.where(mask_refined > 30)] = 0
     _, pred_mask_t = cv2.threshold(mask_pred, 30, 255, cv2.THRESH_BINARY)
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(pred_mask_t, 4, cv2.CV_16U)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        pred_mask_t, 4, cv2.CV_16U
+    )
     valid_labels = np.where(stats[:, -1] > 50)[0]
     seg_blk_list = []
     if len(valid_labels) > 0:
@@ -173,12 +187,18 @@ def refine_undetected_mask(
             if bbox_score / w / h < 0.5:
                 seg_blk_list.append(TextBlock(bbox))
     if len(seg_blk_list) > 0:
-        mask_refined = cv2.bitwise_or(mask_refined, refine_mask(img, mask_pred, seg_blk_list, refine_mode=refine_mode))
+        mask_refined = cv2.bitwise_or(
+            mask_refined,
+            refine_mask(img, mask_pred, seg_blk_list, refine_mode=refine_mode),
+        )
     return mask_refined
 
 
 def refine_mask(
-    img: np.ndarray, pred_mask: np.ndarray, blk_list: List[TextBlock], refine_mode: int = REFINEMASK_INPAINT
+    img: np.ndarray,
+    pred_mask: np.ndarray,
+    blk_list: List[TextBlock],
+    refine_mode: int = REFINEMASK_INPAINT,
 ) -> np.ndarray:
     mask_refined = np.zeros_like(pred_mask)
     for blk in blk_list:
@@ -188,9 +208,15 @@ def refine_mask(
         mask_list = get_topk_masklist(im, msk)
         mask_list += get_otsuthresh_masklist(im, msk, per_channel=False)
         mask_merged = merge_mask_list(
-            mask_list, msk, blk=blk, text_window=[bx1, by1, bx2, by2], refine_mode=refine_mode
+            mask_list,
+            msk,
+            blk=blk,
+            text_window=[bx1, by1, bx2, by2],
+            refine_mode=refine_mode,
         )
-        mask_refined[by1:by2, bx1:bx2] = cv2.bitwise_or(mask_refined[by1:by2, bx1:bx2], mask_merged)
+        mask_refined[by1:by2, bx1:bx2] = cv2.bitwise_or(
+            mask_refined[by1:by2, bx1:bx2], mask_merged
+        )
     return mask_refined
 
 
