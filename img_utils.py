@@ -157,7 +157,7 @@ def wrap_text(text, font, box_w):
             if line:  # push previous line
                 lines.append(line)
             # check if single word itself is too long → hyphenate
-            if font.getlength(word) > box_w:
+            if font.getlength(word) > 1.1 * box_w:
                 partial = ""
                 for ch in word:
                     if font.getlength(partial + ch + "-") <= box_w:

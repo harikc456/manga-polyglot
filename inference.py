@@ -5,6 +5,7 @@ import torch
 import argparse
 from PIL import Image
 from tqdm import tqdm
+from collections import deque
 from img_utils import imread, replace_text_with_translation
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 
@@ -24,6 +25,8 @@ def clean_page(img_path, temp_dir, blk_list, mask_refined):
         x1, y1, x2, y2 = blk.xyxy
         cropped_img = img[y1:y2, x1:x2]
         masked_block = mask_refined[y1:y2, x1:x2]
+        if not len(masked_block):
+            continue
         cleaned_block = clean_text_blocks(cropped_img, masked_block)
         filtered_block = cv2.medianBlur(cleaned_block, 25)
         img[y1:y2, x1:x2] = filtered_block
@@ -52,6 +55,7 @@ def extract_text(img_path, blk_list, ocr_model, processor, tokenizer):
 
 
 def driver(input_dir, temp_dir, output_dir, config, target_language):
+    context_pages = 3
     ocr_model_id = config["ocr_model"]
     model_path = config["text_detection_model_path"]
     llm_name = config["llm_name"]
@@ -68,10 +72,12 @@ def driver(input_dir, temp_dir, output_dir, config, target_language):
     if not os.path.exists(temp_dir):
         os.mkdir(temp_dir)
 
-    img_paths = os.listdir(input_dir)
+    img_paths = sorted(os.listdir(input_dir))
+    computed = {}
     for img_name in tqdm(img_paths):
         img_path = os.path.join(input_dir, img_name)
-        out_path = os.path.join(output_dir, img_name)
+
+        computed[img_path] = {}
 
         # Read image
         img = imread(img_path)
@@ -87,10 +93,27 @@ def driver(input_dir, temp_dir, output_dir, config, target_language):
             img_path, blk_list, ocr_model, processor, tokenizer
         )
 
+        computed[img_path]["texts"] = texts
+        computed[img_path]["text_boxes"] = text_boxes
+        computed[img_path]["page_context"] = "\n\n".join(texts)
+        computed[img_path]["clean_img_path"] = cleaned_file_path
+
+    context_list = deque(maxlen=context_pages)
+    for img_name in tqdm(img_paths):
+
+        img_path = os.path.join(input_dir, img_name)
+        out_path = os.path.join(output_dir, img_name)
         # Replace original text with the translated ones
+
         translations = []
-        context = "\n\n".join(texts)
-        for text, text_box in zip(texts, text_boxes):
+        precomputed_vals = computed[img_path]
+        cleaned_file_path = computed[img_path]["clean_img_path"]
+        context_list.append(computed[img_path]["page_context"])
+        context = "\n".join(context_list)
+
+        for text, text_box in zip(
+            precomputed_vals["texts"], precomputed_vals["text_boxes"]
+        ):
             translated = translate(text, llm_name, context=context)
             translations.append(
                 {"original": text, "translated": translated, "polygon": text_box}

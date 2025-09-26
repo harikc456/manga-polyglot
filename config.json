@@ -1,6 +1,6 @@
 {
     "text_detection_model_path": "./models/weights/comictextdetector.pt",
     "ocr_model": "kha-white/manga-ocr-base",
-    "llm_name": "mistral-nemo:latest",
+    "llm_name": "qwen3:30b-a3b",
     "font_path": "./fonts/animeace2_bld.otf"
 }   
