@@ -1,6 +1,6 @@
 {
-    "text_detection_model_path": "./models/weights/comictextdetector.pt",
-    "ocr_model": "kha-white/manga-ocr-base",
-    "llm_name": "qwen3:30b-a3b",
+    "text_detection_model_path": "ogkalu/comic-text-and-bubble-detector",
+    "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
+    "llm_name": "qwen3:30b-a3b-instruct-2507-q4_K_M",
     "font_path": "./fonts/animeace2_bld.otf"
 }   
