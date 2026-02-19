@@ -36,8 +36,10 @@ def contains_japanese(text: str) -> bool:
     return any(is_japanese_char(char) for char in text)
 
 
-def get_formatted_user_prompt(context: str, text: str, target_language: str) -> str:
-    return f"""Translate this Japanese manga text to {target_language}.
+def get_formatted_user_prompt(
+    context: str, text: str, source_language: str, target_language: str
+) -> str:
+    return f"""Translate this {source_language} text from the manga to {target_language}.
 
 Context: <context>{context}</context>
 
@@ -104,14 +106,20 @@ def call_llm(
 
 
 def translate(
-    text: str, model: str, context: str, target_language: str = "English"
+    text: str,
+    model: str,
+    context: str,
+    source_language: str,
+    target_language: str = "English",
 ) -> str:
     # Normalize non-Japanese text early
     if not contains_japanese(text):
         return unicodedata.normalize("NFKC", text)
 
     # Main translation call
-    user_prompt = get_formatted_user_prompt(context, text, target_language)
+    user_prompt = get_formatted_user_prompt(
+        context, text, source_language, target_language
+    )
     response = call_llm(
         model, SYSTEM_PROMPT, user_prompt, format=Translation.model_json_schema()
     )
@@ -130,14 +138,18 @@ def translate(
         or "onomatopoeia" in cleaned_text.lower()
         or contains_japanese(cleaned_text)
     ):
-        cleaned_text = fallback_translation(text, model, target_language)
+        cleaned_text = fallback_translation(
+            text, model, source_language, target_language
+        )
 
     return cleaned_text
 
 
-def fallback_translation(text: str, model: str, target_language: str) -> str:
+def fallback_translation(
+    text: str, model: str, source_language: str, target_language: str
+) -> str:
     """Fallback: act as Google Translate for direct Japanese → target translation."""
-    system_prompt = f"Your role is to act as DeepL translate. Translate the given Japanese text into {target_language}. Output ONLY the translation."
+    system_prompt = f"Your role is to act as DeepL translate. Translate the given a text in{source_language} to {target_language}. Output ONLY the translation."
     user_prompt = f"Translate to {target_language}: {text}"
 
     fallback_translation = call_llm(model, system_prompt, user_prompt)

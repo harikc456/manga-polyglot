@@ -1,12 +1,8 @@
 import cv2
 import math
-import torch
-import hashlib
 import numpy as np
-from typing import Union
-from utils.yolov5_utils import non_max_suppression
-from utils.imgproc_utils import letterbox
 from PIL import Image, ImageDraw, ImageFont
+from collections import Counter
 
 
 def draw_wrapped_text(image, draw, polygon, text, font_path, font_scale=1.2):
@@ -31,62 +27,172 @@ def draw_wrapped_text(image, draw, polygon, text, font_path, font_scale=1.2):
     draw.text((x, y), wrapped, font=font, fill=fill, align="center")
 
 
-def get_img_hash(img_path: str) -> str:
-    md5hash = hashlib.md5(Image.open(img_path).tobytes())
-    return md5hash.hexdigest()
+def estimate_bubble_bg_color(pil_image, outer_box, border_thickness=12):
+    """
+    Sample color from a frame near the inside edge of the bubble box.
+    Avoids text, avoids outer black border.
+    """
+    img_cv = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    x1, y1, x2, y2 = map(int, outer_box)
+
+    h, w = img_cv.shape[:2]
+
+    # Create a mask for the border strip only
+    full_roi = img_cv[max(0, y1) : min(h, y2), max(0, x1) : min(w, x2)]
+    if full_roi.size == 0:
+        return (255, 255, 255)
+
+    roi_h, roi_w = full_roi.shape[:2]
+
+    # Mask = 255 only in the outer border ring of this ROI
+    mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+    cv2.rectangle(
+        mask,
+        (border_thickness, border_thickness),
+        (roi_w - border_thickness, roi_h - border_thickness),
+        0,
+        -1,
+    )  # hole in center
+    cv2.rectangle(
+        mask, (0, 0), (roi_w - 1, roi_h - 1), 255, border_thickness // 2
+    )  # outer frame
+
+    # Get pixels in that border
+    border_pixels = full_roi[mask == 255]
+
+    if len(border_pixels) < 50:
+        return (255, 255, 255)  # fallback
+
+    # Most common color (mode) — robust against outlines / artifacts
+    pixels_list = [tuple(p) for p in border_pixels]
+    most_common = Counter(pixels_list).most_common(1)[0][0]
+
+    # Or median (sometimes smoother)
+    # most_common = np.median(border_pixels, axis=0).astype(np.uint8)
+
+    return tuple(int(c) for c in most_common)  # BGR → RGB later if needed
+
+
+def fill_bubble_with_estimated_color(pil_image, outer_box):
+    bg_color = estimate_bubble_bg_color(pil_image, outer_box)
+    result = pil_image.copy()
+    draw = ImageDraw.Draw(result)
+    draw.rectangle(outer_box, fill=bg_color)
+    return result
+
+
+def box_center(box):
+    x1, y1, x2, y2 = box
+    return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+
+def box_area(box):
+    return (box[2] - box[0]) * (box[3] - box[1])
+
+
+def intersection_over_union(boxA, boxB):
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = box_area(boxA)
+    boxBArea = box_area(boxB)
+    iou = interArea / float(boxAArea + boxBArea - interArea + 1e-6)
+    return iou
+
+
+def match_text_to_bubbles(text_bubbles, bubbles, iou_thresh=0.15, dist_factor=1.8):
+    matches = {}  # text_idx → bubble_idx
+
+    for t_idx, t in enumerate(text_bubbles):
+        best_score = -1
+        best_b_idx = None
+
+        t_center = box_center(t["box"])
+        t_area = box_area(t["box"])
+
+        for b_idx, b in enumerate(bubbles):
+            b_box = b["box"]
+            iou = intersection_over_union(t["box"], b_box)
+
+            # center distance (normalized roughly by text size)
+            b_center = box_center(b_box)
+            dist = (
+                (t_center[0] - b_center[0]) ** 2 + (t_center[1] - b_center[1]) ** 2
+            ) ** 0.5
+            norm_dist = dist / (t_area**0.5 + 1)  # very rough scale normalization
+
+            # score: strong preference for high IoU, then close center
+            score = iou * 4.0 + (1.0 / (1.0 + norm_dist * 0.8))
+
+            if iou > iou_thresh and score > best_score:
+                best_score = score
+                best_b_idx = b_idx
+
+        if best_b_idx is not None:
+            matches[t_idx] = best_b_idx
+
+    return matches
+
+
+def get_expanded_insertion_box(text_box, outer_box, expand_ratio=0.90):
+    """
+    expand_ratio:
+      0.0  = use original text_box
+      0.5  = exact halfway between text and outer
+      0.65 = more aggressive (common sweet spot)
+      1.0  = use full outer box (risky)
+    """
+    x1t, y1t, x2t, y2t = text_box
+    x1o, y1o, x2o, y2o = outer_box
+
+    # Linear interpolation
+    x1 = x1t + (x1o - x1t) * expand_ratio
+    y1 = y1t + (y1o - y1t) * expand_ratio
+    x2 = x2t + (x2o - x2t) * expand_ratio
+    y2 = y2t + (y2o - y2t) * expand_ratio
+
+    # Optional: add small inner safety margin (3–10 px)
+    margin = 5
+    x1 = max(x1, x1t + margin)
+    y1 = max(y1, y1t + margin)
+    x2 = min(x2, x2t - margin)
+    y2 = min(y2, y2t - margin)
+
+    return [int(round(v)) for v in [x1, y1, x2, y2]]
+
+
+def get_text_insertion_boxes(results, expand_ratio=0.90):
+    text_bubbles = results["text_bubbles"]
+    bubbles = results["bubbles"]
+    matches = match_text_to_bubbles(text_bubbles, bubbles)
+
+    insertion_boxes = []
+
+    for t_idx, t_item in enumerate(text_bubbles):
+        box = t_item["box"]  # default = tight box
+
+        if t_idx in matches:
+            b_idx = matches[t_idx]
+            outer = bubbles[b_idx]["box"]
+            box = get_expanded_insertion_box(t_item["box"], outer, expand_ratio)
+
+        insertion_boxes.append(
+            {
+                "original_text_box": t_item["box"],
+                "insertion_polygon": box,  # ← use this for drawing
+                "confidence": t_item["conf"],
+                "matched_outer": t_idx in matches,
+            }
+        )
+
+    return insertion_boxes
 
 
 def imread(imgpath, read_type=cv2.IMREAD_COLOR):
     """Read an image from a file path (supports non-ASCII paths) using OpenCV."""
     return cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
-
-
-def preprocess_img(
-    img, input_size=(1024, 1024), device="cpu", bgr2rgb=True, half=False, to_tensor=True
-):
-    if bgr2rgb:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img_in, ratio, (dw, dh) = letterbox(
-        img, new_shape=input_size, auto=False, stride=64
-    )
-    if to_tensor:
-        img_in = img_in.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-        img_in = np.array([np.ascontiguousarray(img_in)]).astype(np.float32) / 255
-        if to_tensor:
-            img_in = torch.from_numpy(img_in).to(device)
-            if half:
-                img_in = img_in.half()
-    return img_in, ratio, int(dw), int(dh)
-
-
-def postprocess_mask(img: Union[torch.Tensor, np.ndarray], thresh=None):
-    if isinstance(img, torch.Tensor):
-        img = img.squeeze_()
-        if img.device != "cpu":
-            img = img.detach_().cpu()
-        img = img.numpy()
-    else:
-        img = img.squeeze()
-    if thresh is not None:
-        img = img > thresh
-    img = img * 255
-    return img.astype(np.uint8)
-
-
-def postprocess_yolo(det, conf_thresh, nms_thresh, resize_ratio, sort_func=None):
-    det = non_max_suppression(det, conf_thresh, nms_thresh)[0]
-    # bbox = det[..., 0:4]
-    if det.device != "cpu":
-        det = det.detach_().cpu().numpy()
-    det[..., [0, 2]] = det[..., [0, 2]] * resize_ratio[0]
-    det[..., [1, 3]] = det[..., [1, 3]] * resize_ratio[1]
-    if sort_func is not None:
-        det = sort_func(det)
-
-    blines = det[..., 0:4].astype(np.int32)
-    confs = np.round(det[..., 4], 3)
-    cls = det[..., 5].astype(np.int32)
-    return blines, cls, confs
 
 
 def add_discoloration(color, strength):
@@ -174,12 +280,13 @@ def wrap_text(text, font, box_w):
 
 
 def fits_in_box(text, draw, font, box_w, box_h):
-    """Check if wrapped text fits inside box with given font."""
-    wrapped = wrap_text(text, font, box_w)
-    # left, top, right, bottom = font.getbbox_multiline(wrapped)
-    left, top, right, bottom = draw.textbbox((0, 0), wrapped, font=font)
-    text_w, text_h = right - left, bottom - top
-    return text_w <= box_w and text_h <= box_h, wrapped
+    wrapped = wrap_text(text, font, box_w * 0.92)
+    bbox = draw.textbbox((0, 0), wrapped, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+
+    required_h = text_h * 1.15
+    return text_w <= box_w and required_h <= box_h, wrapped
 
 
 def find_max_fontsize(text, draw, font_path, box_w, box_h, min_size=1, max_size=200):

@@ -1,73 +1,96 @@
 import os
-import cv2
+import gc
+import time
 import json
 import torch
 import argparse
 from PIL import Image
 from tqdm import tqdm
 from collections import deque
-from img_utils import imread, replace_text_with_translation
-from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
+from img_utils import (
+    replace_text_with_translation,
+    fill_bubble_with_estimated_color,
+    get_text_insertion_boxes,
+)
+from transformers import RTDetrV2ForObjectDetection, RTDetrImageProcessor
+from transformers import AutoProcessor, AutoModelForImageTextToText
+from text_detection import detect_text
 
-from text_detector import TextDetector
-from text_utils import post_process, translate
+from text_utils import translate
 
 
-def clean_text_blocks(img, mask):
-    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-    inpainted_telea = cv2.inpaint(img, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-    return inpainted_telea
-
-
-def clean_page(img_path, temp_dir, blk_list, mask_refined):
-    img = imread(img_path)
-    for blk in blk_list:
-        x1, y1, x2, y2 = blk.xyxy
-        cropped_img = img[y1:y2, x1:x2]
-        masked_block = mask_refined[y1:y2, x1:x2]
-        if not len(masked_block):
-            continue
-        cleaned_block = clean_text_blocks(cropped_img, masked_block)
-        filtered_block = cv2.medianBlur(cleaned_block, 25)
-        img[y1:y2, x1:x2] = filtered_block
-
+def clean_page(img_path, temp_dir, boxes):
+    pil_image = Image.open(img_path).convert("RGB")
     file_name = os.path.basename(img_path)
     cleaned_file_path = os.path.join(temp_dir, file_name)
-    cv2.imwrite(cleaned_file_path, img)
+    for box in boxes:
+        pil_image = fill_bubble_with_estimated_color(
+            pil_image, box["original_text_box"]
+        )
+
+    pil_image.save(cleaned_file_path)
     return cleaned_file_path
 
 
-def extract_text(img_path, blk_list, ocr_model, processor, tokenizer):
+def extract_text(img_path, boxes, model, processor):
+    max_pixels = 1280 * 28 * 28
     texts = []
     text_boxes = []
-    for blk in blk_list:
-        box = blk.xyxy
+    for box in boxes:
+        box = box["insertion_polygon"]
         img = Image.open(img_path)
         cropped_img = img.crop(box)
         cropped_img = cropped_img.convert("L").convert("RGB")
-        x = processor(cropped_img, return_tensors="pt").pixel_values.squeeze(0)
-        x = ocr_model.generate(x[None].to(ocr_model.device), max_length=300)[0].cpu()
-        x = tokenizer.decode(x, skip_special_tokens=True)
-        x = post_process(x)
-        texts.append(x)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": cropped_img},
+                    {"type": "text", "text": "OCR:"},
+                ],
+            }
+        ]
+
+        inputs = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            images_kwargs={
+                "size": {
+                    "shortest_edge": processor.image_processor.min_pixels,
+                    "longest_edge": max_pixels,
+                }
+            },
+        ).to(model.device)
+
+        outputs = model.generate(**inputs, max_new_tokens=256)
+        result = processor.decode(outputs[0][inputs["input_ids"].shape[-1] : -1])
+        texts.append(result)
         text_boxes.append(box)
     return texts, text_boxes
 
 
-def driver(input_dir, temp_dir, output_dir, config, target_language):
+def driver(input_dir, temp_dir, output_dir, config, source_language, target_language):
     context_pages = 3
     ocr_model_id = config["ocr_model"]
-    model_path = config["text_detection_model_path"]
+    model_id = config["text_detection_model_path"]
     llm_name = config["llm_name"]
     font_path = config["font_path"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    det_model = TextDetector(
-        model_path=model_path, input_size=1024, device=device, act="leaky"
+
+    image_processor = RTDetrImageProcessor.from_pretrained(model_id)
+    det_model = RTDetrV2ForObjectDetection.from_pretrained(model_id)
+
+    ocr_model = (
+        AutoModelForImageTextToText.from_pretrained(
+            ocr_model_id, torch_dtype=torch.bfloat16
+        )
+        .to(device)
+        .eval()
     )
-    processor = ViTImageProcessor.from_pretrained(ocr_model_id)
-    tokenizer = AutoTokenizer.from_pretrained(ocr_model_id)
-    ocr_model = VisionEncoderDecoderModel.from_pretrained(ocr_model_id)
-    ocr_model = ocr_model.to(device)
+    processor = AutoProcessor.from_pretrained(ocr_model_id)
 
     if not os.path.exists(temp_dir):
         os.mkdir(temp_dir)
@@ -79,30 +102,35 @@ def driver(input_dir, temp_dir, output_dir, config, target_language):
 
         computed[img_path] = {}
 
-        # Read image
-        img = imread(img_path)
+        results = detect_text(img_path, det_model, image_processor)
 
-        # Perform text detection (bounding box prediction)
-        _, mask_refined, blk_list = det_model(img)
+        boxes = get_text_insertion_boxes(results, expand_ratio=0.8)
 
         ## clean the image to remove the texts
-        cleaned_file_path = clean_page(img_path, temp_dir, blk_list, mask_refined)
+        cleaned_file_path = clean_page(img_path, temp_dir, boxes)
 
         # Extract texts from the bounding boxes
-        texts, text_boxes = extract_text(
-            img_path, blk_list, ocr_model, processor, tokenizer
-        )
+        texts, text_boxes = extract_text(img_path, boxes, ocr_model, processor)
 
         computed[img_path]["texts"] = texts
         computed[img_path]["text_boxes"] = text_boxes
         computed[img_path]["page_context"] = "\n\n".join(texts)
         computed[img_path]["clean_img_path"] = cleaned_file_path
 
+    ## Removing models from GPU to make space for the LLM
+
+    del ocr_model
+    del det_model
+    torch.cuda.empty_cache()
+    gc.collect()
+    time.sleep(5)
+
     context_list = deque(maxlen=context_pages)
     for img_name in tqdm(img_paths):
 
         img_path = os.path.join(input_dir, img_name)
         out_path = os.path.join(output_dir, img_name)
+
         # Replace original text with the translated ones
 
         translations = []
@@ -114,7 +142,13 @@ def driver(input_dir, temp_dir, output_dir, config, target_language):
         for text, text_box in zip(
             precomputed_vals["texts"], precomputed_vals["text_boxes"]
         ):
-            translated = translate(text, llm_name, context=context)
+            translated = translate(
+                text,
+                llm_name,
+                context=context,
+                source_language=source_language,
+                target_language=target_language,
+            )
             translations.append(
                 {"original": text, "translated": translated, "polygon": text_box}
             )
@@ -133,6 +167,13 @@ def main():
         "--output-dir",
         type=str,
         help="the directory to which translated images are stored",
+    )
+
+    parser.add_argument(
+        "--source-lang",
+        type=str,
+        help="the directory to which translated images are stored",
+        default="English",
     )
 
     parser.add_argument(
@@ -157,9 +198,10 @@ def main():
     input_dir = args.input_dir
     output_dir = args.output_dir
     temp_dir = args.temp_dir
+    source_language = args.source_lang
     target_language = args.target_lang
 
-    driver(input_dir, temp_dir, output_dir, config, target_language)
+    driver(input_dir, temp_dir, output_dir, config, source_language, target_language)
 
 
 if __name__ == "__main__":
