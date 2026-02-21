@@ -190,11 +190,6 @@ def get_text_insertion_boxes(results, expand_ratio=0.90):
     return insertion_boxes
 
 
-def imread(imgpath, read_type=cv2.IMREAD_COLOR):
-    """Read an image from a file path (supports non-ASCII paths) using OpenCV."""
-    return cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
-
-
 def add_discoloration(color, strength):
     r, g, b = color[:3]
     r = max(0, min(255, r + strength))
@@ -250,37 +245,59 @@ def get_text_fill_color(background_color):
         return "white"  # Use white text for dark backgrounds
 
 
-def wrap_text(text, font, box_w):
-    """Wrap text into lines that fit inside box_w, with hyphenation if needed."""
+def wrap_text(text, font, box_w, hyphenate_only_words_ge=8):
+    """
+    Wrap text into lines that fit inside box_w.
+    Only hyphenate words that have >= hyphenate_only_words_ge characters.
+    """
     words = text.split()
-    lines, line = [], ""
+    lines = []
+    current_line = ""
 
     for word in words:
-        trial = (line + " " + word).strip()
+        # Try adding the whole word to current line
+        trial = (current_line + " " + word).strip() if current_line else word
+        
         if font.getlength(trial) <= box_w:
-            line = trial
+            current_line = trial
+            continue
+
+        # Word doesn't fit → decide what to do
+        if current_line:
+            lines.append(current_line)
+            current_line = ""
+
+        # Now: does the word itself fit on its own line?
+        if font.getlength(word) <= box_w:
+            current_line = word
         else:
-            if line:  # push previous line
-                lines.append(line)
-            # check if single word itself is too long → hyphenate
-            if font.getlength(word) > 1.1 * box_w:
+            # Word is too long to fit even alone
+            if len(word) >= hyphenate_only_words_ge:
+                # Hyphenate long words
                 partial = ""
                 for ch in word:
-                    if font.getlength(partial + ch + "-") <= box_w:
+                    candidate = partial + ch + "-"
+                    if font.getlength(candidate) <= box_w:
                         partial += ch
                     else:
-                        lines.append(partial + "-")
+                        if partial:
+                            lines.append(partial + "-")
                         partial = ch
-                line = partial
+                if partial:
+                    current_line = partial
             else:
-                line = word
-    if line:
-        lines.append(line)
+                # Short word but still doesn't fit → have to put it anyway
+                # (this case is rare after line break, but we don't break it)
+                current_line = word
+
+    if current_line:
+        lines.append(current_line)
+
     return "\n".join(lines)
 
 
 def fits_in_box(text, draw, font, box_w, box_h):
-    wrapped = wrap_text(text, font, box_w * 0.92)
+    wrapped = wrap_text(text, font, box_w * 0.92, hyphenate_only_words_ge=9)
     bbox = draw.textbbox((0, 0), wrapped, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]

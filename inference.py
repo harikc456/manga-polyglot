@@ -125,8 +125,12 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     gc.collect()
     time.sleep(5)
 
+    lookback_pages = 2
+    lookahead_pages = 2
+    n_pages = len(img_paths)
+
     context_list = deque(maxlen=context_pages)
-    for img_name in tqdm(img_paths):
+    for i, img_name in enumerate(tqdm(img_paths)):
 
         img_path = os.path.join(input_dir, img_name)
         out_path = os.path.join(output_dir, img_name)
@@ -138,6 +142,28 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         cleaned_file_path = computed[img_path]["clean_img_path"]
         context_list.append(computed[img_path]["page_context"])
         context = "\n".join(context_list)
+
+        # Build context: lookback + current (optional) + lookahead
+        context_parts = []
+
+        # Lookback (previous pages)
+        for j in range(max(0, i - lookback_pages), i):
+            prev_img_path = os.path.join(input_dir, img_paths[j])
+            ctx = computed[prev_img_path]["page_context"]
+            if ctx:
+                context_parts.append(f"[Page {j+1}] {ctx}")
+
+        # Optionally include current page context (many teams exclude it)
+        context_parts.append(f"[Current Page] {precomputed_vals['page_context']}")
+
+        # Lookahead (future pages)
+        for j in range(i + 1, min(n_pages, i + 1 + lookahead_pages)):
+            next_img_path = os.path.join(input_dir, img_paths[j])
+            ctx = computed[next_img_path]["page_context"]
+            if ctx:
+                context_parts.append(f"[Page {j+1} ahead] {ctx}")
+
+        context = "\n\n".join(context_parts).strip()
 
         for text, text_box in zip(
             precomputed_vals["texts"], precomputed_vals["text_boxes"]
