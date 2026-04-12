@@ -1,6 +1,6 @@
 from unittest.mock import patch
 from data_model import CharacterEntry, EntityEntry, SessionMemory
-from text_utils import update_session_memory
+from text_utils import update_session_memory, get_formatted_user_prompt, get_formatted_user_prompt_with_image
 import tempfile, os
 
 
@@ -55,8 +55,6 @@ def test_update_session_memory_falls_back_on_schema_violating_json():
             result = update_session_memory(_make_translations(), original, "test-model", tmpdir)
     assert result.story_summary == "original summary"
 
-
-from text_utils import get_formatted_user_prompt, get_formatted_user_prompt_with_image
 
 
 def _sample_memory() -> SessionMemory:
