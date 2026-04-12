@@ -1,7 +1,8 @@
 import os
 import pytest
-from unittest.mock import patch, MagicMock, call
-
+from unittest.mock import patch, MagicMock
+import inference
+from inference import driver
 
 def _make_driver_deps():
     """Return the minimal mock set needed to run driver() without real models."""
@@ -26,6 +27,7 @@ def _make_driver_deps():
     return patches
 
 
+@pytest.mark.xfail(strict=True, reason="skip logic not yet implemented — see Task 2")
 def test_translate_not_called_for_existing_output(tmp_path):
     """Pages with an existing output file are skipped — translate() is never called for them."""
     input_dir = tmp_path / "input"
@@ -55,7 +57,6 @@ def test_translate_not_called_for_existing_output(tmp_path):
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), \
          patch("torch.cuda.empty_cache"):
-        from inference import driver
         driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
 
     translate_mock = patches["inference.translate"]
@@ -88,7 +89,6 @@ def test_all_pages_translated_when_no_output_exists(tmp_path):
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), \
          patch("torch.cuda.empty_cache"):
-        from inference import driver
         driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
 
     translate_mock = patches["inference.translate"]
