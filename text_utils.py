@@ -64,6 +64,30 @@ def contains_japanese(text: str) -> bool:
     return any(is_japanese_char(char) for char in text)
 
 
+def _build_prompt_base(
+    context: str,
+    text: str,
+    source_language: str,
+    target_language: str,
+    previous_translations: list,
+    session_memory: "SessionMemory | None",
+) -> str:
+    prompt = (
+        f"Translate this {source_language} text from the manga to {target_language}.\n\n"
+        f"Context: <context>{context}</context>\n\n"
+        f"Text to translate: <text>{text}</text>\n\n"
+    )
+    memory_section = format_memory_for_prompt(session_memory) if session_memory else ""
+    if memory_section:
+        prompt += memory_section + "\n\n"
+    if previous_translations:
+        prompt += "Previous translations on this page (for consistency):\n"
+        for i, prev in enumerate(previous_translations, 1):
+            prompt += f"{i}. {source_language}: {prev['original']}\n   {target_language}: {prev['translated']}\n"
+        prompt += "\n"
+    return prompt
+
+
 def get_formatted_user_prompt(
     context: str,
     text: str,
@@ -72,31 +96,15 @@ def get_formatted_user_prompt(
     previous_translations: list = None,
     session_memory: SessionMemory = None,
 ) -> str:
-    prompt = f"""Translate this {source_language} text from the manga to {target_language}.
-
-Context: <context>{context}</context>
-
-Text to translate: <text>{text}</text>
-
-"""
-
-    memory_section = format_memory_for_prompt(session_memory) if session_memory else ""
-    if memory_section:
-        prompt += memory_section + "\n\n"
-
-    if previous_translations:
-        prompt += "Previous translations on this page (for consistency):\n"
-        for i, prev in enumerate(previous_translations, 1):
-            prompt += f"{i}. {source_language}: {prev['original']}\n   {target_language}: {prev['translated']}\n"
-        prompt += "\n"
-
+    prompt = _build_prompt_base(
+        context, text, source_language, target_language,
+        previous_translations, session_memory,
+    )
     prompt += f"""Match the tone and atmosphere of the surrounding context in your translation.
 
 - You are to return JSON structure output with two fields
     - text - the original text that was supposed to be translated. The value of this field should be {text}.
-    - translated_text - the translation for the input text in {target_language}.
-""".strip()
-
+    - translated_text - the translation for the input text in {target_language}."""
     return prompt
 
 
@@ -108,32 +116,16 @@ def get_formatted_user_prompt_with_image(
     previous_translations: list = None,
     session_memory: SessionMemory = None,
 ) -> str:
-    prompt = f"""Translate this {source_language} text from the manga to {target_language}.
-
-Context: <context>{context}</context>
-
-Text to translate: <text>{text}</text>
-
-"""
-
-    memory_section = format_memory_for_prompt(session_memory) if session_memory else ""
-    if memory_section:
-        prompt += memory_section + "\n\n"
-
-    if previous_translations:
-        prompt += "Previous translations on this page (for consistency):\n"
-        for i, prev in enumerate(previous_translations, 1):
-            prompt += f"{i}. {source_language}: {prev['original']}\n   {target_language}: {prev['translated']}\n"
-        prompt += "\n"
-
+    prompt = _build_prompt_base(
+        context, text, source_language, target_language,
+        previous_translations, session_memory,
+    )
     prompt += f"""Match the tone and atmosphere of the surrounding context in your translation.
 
 - You are to return JSON structure output with two fields
     - text - the original text that was supposed to be translated which would be {text}. SHOULD NOT BE EMPTY
     - translated_text - the translation for the input text in {target_language}.
-- Use the provided image to aid your translation
-""".strip()
-
+- Use the provided image to aid your translation"""
     return prompt
 
 
@@ -164,7 +156,7 @@ def call_llm(
     temperature: float = 0.35,
     num_ctx: int = 256,
     frequency_penalty: float = 0.5,
-    presence_penalty: float = 1.5                            ,
+    presence_penalty: float = 1.5,
     stop: list = None,
     format: str = None,
     image: Image.Image = None,
