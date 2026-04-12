@@ -1,24 +1,51 @@
+import os
 import re
 import jaconv
 import unicodedata
+from PIL import Image
 from ollama import chat, ChatResponse
-from data_model import Translation
+from data_model import Translation, SessionMemory
+from memory_utils import serialize_memory, format_memory_for_prompt
 
 # Fixed System Prompt
 SYSTEM_PROMPT = """
-You are an experienced manga translator for one of the biggest publishers in the world. 
-You will be given the entire context of a page or chapter and then will be asked to translate a specific text which is part of that context. 
-You must use the context to provide an accurate translation of the text. 
-Do not translate the context in one go. Ensure that the translated text remains meaningful taking the overall context into account.
-Ensure the tenses and pronoun are consistent across the translation.
+You are an experienced manga translator for one of the biggest publishers in the world.
+You will be given the context of surrounding pages and then asked to translate a specific text from the current page.
+
+ATMOSPHERE & TONE (most important):
+- Read the context carefully to infer the genre, mood, and setting (e.g. tense action, lighthearted comedy, emotional romance, horror, slice-of-life).
+- Match your word choices and sentence rhythm to that inferred atmosphere. A battle cry should feel urgent and punchy. Casual banter should feel relaxed and colloquial. Heartfelt dialogue should feel warm and natural.
+- Infer each character's speech register from context (formal, rough, childlike, archaic, etc.) and reflect it consistently.
+- Prioritise natural, genre-appropriate dialogue over word-for-word literal accuracy. The translation should sound like something a real person would say in that genre — not a textbook sentence.
+
+CONSISTENCY:
+- Ensure tenses and pronouns are consistent across the translation.
+- If previous translations are provided, use them as reference for terminology, character voice, and style.
 
 CRITICAL OUTPUT RULES:
-- Output ONLY the translated text, nothing else
 - DO NOT include explanations, breakdown, notes, or commentary about the translation
-- The onomatopoeia needs to be translated according to how it sounds
-- Similarly translate, voices for suprises like for example え？ being "Eh?" or "Huh"?
-- The translated text is going to replace the original text, hence the length of the translation SHOULD be close the number of characters inside <text> tags
+- Translate onomatopoeia according to how it sounds in the target language
+- Translate surprise/reaction sounds naturally (e.g. え？ → "Huh?" or "Eh?", depending on the scene's tone)
+- The translated text will replace the original, so its length SHOULD be close to the number of characters inside <text> tags
 """.strip()
+
+def clean_ocr_garbage(text: str) -> str:
+    if not text.strip():
+        return text
+
+    # Remove long chains of identical box-drawing / line chars
+    text = re.sub(r'([┌┐└┘├┤┬┴┼─│━┃═║]{3,})', '', text)          # ≥3 repeated line chars
+
+    # Remove chains of almost any non-letter/symbol punctuation junk
+    text = re.sub(r'([^\w\s\u3000-\u30FF\u4E00-\u9FFF]{3,})', '', text)
+
+    # Optional: collapse multiple punctuation → single (…… → …)
+    text = re.sub(r'([…ー〜\-=]{2,})', lambda m: m.group(1)[0]*min(3, len(m.group(1))), text)
+
+    # Remove trailing/leading junk that often appears
+    text = text.strip(' .,…ー〜└│─═║┌┐┘├┤\u200b\ufeff')  # zero-width & invisible too
+
+    return text.strip()
 
 
 def is_japanese_char(char: str) -> bool:
@@ -37,19 +64,58 @@ def contains_japanese(text: str) -> bool:
 
 
 def get_formatted_user_prompt(
-    context: str, text: str, source_language: str, target_language: str
+    context: str, text: str, source_language: str, target_language: str, previous_translations: list = None
 ) -> str:
-    return f"""Translate this {source_language} text from the manga to {target_language}.
+    prompt = f"""Translate this {source_language} text from the manga to {target_language}.
 
 Context: <context>{context}</context>
 
 Text to translate: <text>{text}</text>
 
+"""
+
+    if previous_translations:
+        prompt += "Previous translations on this page (for consistency):\n"
+        for i, prev in enumerate(previous_translations, 1):
+            prompt += f"{i}. {source_language}: {prev['original']}\n   {target_language}: {prev['translated']}\n"
+        prompt += "\n"
+
+    prompt += f"""Match the tone and atmosphere of the surrounding context in your translation.
+
 - You are to return JSON structure output with two fields
-    - text - the original text that was supposed to be translated which would be {text}
-    - translated_texts - a list of possible translations for the input text in {target_language}.
-    - notes - any notes about the translation in less than 20 words
+    - text - the original text that was supposed to be translated. The value of this field should be {text}.
+    - translated_text - the translation for the input text in {target_language}.
 """.strip()
+
+    return prompt
+
+
+def get_formatted_user_prompt_with_image(
+    context: str, text: str, source_language: str, target_language: str, previous_translations: list = None
+) -> str:
+    prompt = f"""Translate this {source_language} text from the manga to {target_language}.
+
+Context: <context>{context}</context>
+
+Text to translate: <text>{text}</text>
+
+"""
+
+    if previous_translations:
+        prompt += "Previous translations on this page (for consistency):\n"
+        for i, prev in enumerate(previous_translations, 1):
+            prompt += f"{i}. {source_language}: {prev['original']}\n   {target_language}: {prev['translated']}\n"
+        prompt += "\n"
+
+    prompt += f"""Match the tone and atmosphere of the surrounding context in your translation.
+
+- You are to return JSON structure output with two fields
+    - text - the original text that was supposed to be translated which would be {text}. SHOULD NOT BE EMPTY
+    - translated_text - the translation for the input text in {target_language}.
+- Use the provided image to aid your translation
+""".strip()
+
+    return prompt
 
 
 def clean_translated_text(text: str) -> str:
@@ -64,7 +130,7 @@ def clean_translated_text(text: str) -> str:
 
 
 def post_process(text: str) -> str:
-    """Post-process Japanese text: normalize spaprint(translation.translated_texts)cing, ellipses, and half-width chars."""
+    """Post-process Japanese text: normalize spacing, ellipses, and half-width chars."""
     text = "".join(text.split())
     text = text.replace("…", "...")
     text = re.sub(r"[・.]{2,}", lambda m: "." * len(m.group()), text)
@@ -76,21 +142,37 @@ def call_llm(
     model: str,
     system_prompt: str,
     user_prompt: str,
-    temperature: float = 0.0,
+    temperature: float = 0.35,
     num_ctx: int = 256,
     frequency_penalty: float = 0.5,
-    presence_penalty: float = 0.2,
+    presence_penalty: float = 1.5                            ,
     stop: list = None,
     format: str = None,
+    image: Image.Image = None,
 ) -> str:
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+    ]
+    
+    if image is not None:
+        # Convert PIL Image to bytes for ollama
+        import io
+        image_bytes = io.BytesIO()
+        image.save(image_bytes, format="PNG")
+        
+        messages.append({
+            "role": "user",
+            "content": user_prompt,
+            "images": [image_bytes.getvalue()],
+        })
+    else:
+        messages.append({"role": "user", "content": user_prompt})
 
     response: ChatResponse = chat(
         model=model,
         format=format,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        messages=messages,
         options={
             "temperature": temperature,
             "num_ctx": num_ctx,
@@ -98,9 +180,19 @@ def call_llm(
             "frequency_penalty": frequency_penalty,
             "presence_penalty": presence_penalty,
             "stop": stop,
+            "think": False, 
         },
         stream=False,
     )
+
+    print("========================================= LLM Thinking ================================================================")
+    print(response.message.thinking)
+    print("========================================================================================================================")
+
+
+    print("========================================= LLM Response ================================================================")
+    print(response.message.content)
+    print("========================================================================================================================")
 
     return response.message.content
 
@@ -111,21 +203,33 @@ def translate(
     context: str,
     source_language: str,
     target_language: str = "English",
+    image: Image.Image = None,
+    previous_translations: list = None,
 ) -> str:
     # Normalize non-Japanese text early
     if not contains_japanese(text):
         return unicodedata.normalize("NFKC", text)
 
+    text = clean_ocr_garbage(text)
+    text = post_process(text)
+
     # Main translation call
-    user_prompt = get_formatted_user_prompt(
-        context, text, source_language, target_language
-    )
+    if image is not None:
+        print("Using image for translation...")
+        user_prompt = get_formatted_user_prompt_with_image(
+            context, text, source_language, target_language, previous_translations
+        )
+    else:
+        user_prompt = get_formatted_user_prompt(
+            context, text, source_language, target_language, previous_translations
+        )
+
     response = call_llm(
-        model, SYSTEM_PROMPT, user_prompt, format=Translation.model_json_schema()
+        model, SYSTEM_PROMPT, user_prompt, format=Translation.model_json_schema(), image=image
     )
     translation = Translation.model_validate_json(response)
 
-    cleaned_text = translation.translated_texts[0]
+    cleaned_text = translation.translated_text
     cleaned_text = clean_translated_text(cleaned_text)
 
     # Debug prints (optional — comment out in production)
@@ -139,18 +243,76 @@ def translate(
         or contains_japanese(cleaned_text)
     ):
         cleaned_text = fallback_translation(
-            text, model, source_language, target_language
+            text, model, source_language, target_language, image
         )
 
     return cleaned_text
 
 
 def fallback_translation(
-    text: str, model: str, source_language: str, target_language: str
+    text: str, model: str, source_language: str, target_language: str, image: Image.Image = None
 ) -> str:
     """Fallback: act as Google Translate for direct Japanese → target translation."""
     system_prompt = f"Your role is to act as DeepL translate. Translate the given a text in{source_language} to {target_language}. Output ONLY the translation."
     user_prompt = f"Translate to {target_language}: {text}"
 
-    fallback_translation = call_llm(model, system_prompt, user_prompt)
+    fallback_translation = call_llm(model, system_prompt, user_prompt, num_ctx=4096, image=image)
     return clean_translated_text(fallback_translation)
+
+
+MEMORY_UPDATE_SYSTEM_PROMPT = """
+You are a manga translation assistant responsible for maintaining a translation memory.
+Given the current page's translations and the existing memory state, you must:
+1. Identify new named entities: characters (with gender inferred from speech/context/names), places, organizations
+2. Update existing entries only if a correction is clearly warranted
+3. Rewrite the story summary to include events from this page (150 words max, cumulative)
+
+Output ONLY valid JSON matching the provided schema. No commentary or explanation.
+""".strip()
+
+
+def update_session_memory(
+    translations: list[dict],
+    session_memory: SessionMemory,
+    model: str,
+    temp_dir: str,
+) -> SessionMemory:
+    current_chars = [
+        f"{c.original_name} → {c.translated_name} ({c.gender})" +
+        (f", {c.notes}" if c.notes else "")
+        for c in session_memory.characters
+    ]
+    current_places = [f"{p.original} → {p.translated}" for p in session_memory.places]
+    current_orgs = [f"{o.original} → {o.translated}" for o in session_memory.organizations]
+
+    page_text = "\n".join(
+        f"Original: {t['original']}\nTranslated: {t['translated']}"
+        for t in translations
+    )
+
+    user_prompt = f"""Current memory state:
+Characters: {', '.join(current_chars) if current_chars else 'none'}
+Places: {', '.join(current_places) if current_places else 'none'}
+Organizations: {', '.join(current_orgs) if current_orgs else 'none'}
+Story summary: {session_memory.story_summary or 'none'}
+
+Current page translations:
+{page_text}
+
+Return the complete updated memory as JSON."""
+
+    response = call_llm(
+        model,
+        MEMORY_UPDATE_SYSTEM_PROMPT,
+        user_prompt,
+        format=SessionMemory.model_json_schema(),
+        num_ctx=4096,
+    )
+
+    try:
+        updated = SessionMemory.model_validate_json(response)
+    except Exception:
+        updated = session_memory
+
+    serialize_memory(updated, os.path.join(temp_dir, "memory.md"))
+    return updated
