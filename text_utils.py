@@ -65,7 +65,12 @@ def contains_japanese(text: str) -> bool:
 
 
 def get_formatted_user_prompt(
-    context: str, text: str, source_language: str, target_language: str, previous_translations: list = None
+    context: str,
+    text: str,
+    source_language: str,
+    target_language: str,
+    previous_translations: list = None,
+    session_memory: SessionMemory = None,
 ) -> str:
     prompt = f"""Translate this {source_language} text from the manga to {target_language}.
 
@@ -74,6 +79,10 @@ Context: <context>{context}</context>
 Text to translate: <text>{text}</text>
 
 """
+
+    memory_section = format_memory_for_prompt(session_memory) if session_memory else ""
+    if memory_section:
+        prompt += memory_section + "\n\n"
 
     if previous_translations:
         prompt += "Previous translations on this page (for consistency):\n"
@@ -92,7 +101,12 @@ Text to translate: <text>{text}</text>
 
 
 def get_formatted_user_prompt_with_image(
-    context: str, text: str, source_language: str, target_language: str, previous_translations: list = None
+    context: str,
+    text: str,
+    source_language: str,
+    target_language: str,
+    previous_translations: list = None,
+    session_memory: SessionMemory = None,
 ) -> str:
     prompt = f"""Translate this {source_language} text from the manga to {target_language}.
 
@@ -101,6 +115,10 @@ Context: <context>{context}</context>
 Text to translate: <text>{text}</text>
 
 """
+
+    memory_section = format_memory_for_prompt(session_memory) if session_memory else ""
+    if memory_section:
+        prompt += memory_section + "\n\n"
 
     if previous_translations:
         prompt += "Previous translations on this page (for consistency):\n"
@@ -206,6 +224,7 @@ def translate(
     target_language: str = "English",
     image: Image.Image = None,
     previous_translations: list = None,
+    session_memory: SessionMemory = None,
 ) -> str:
     # Normalize non-Japanese text early
     if not contains_japanese(text):
@@ -218,11 +237,13 @@ def translate(
     if image is not None:
         print("Using image for translation...")
         user_prompt = get_formatted_user_prompt_with_image(
-            context, text, source_language, target_language, previous_translations
+            context, text, source_language, target_language,
+            previous_translations, session_memory=session_memory,
         )
     else:
         user_prompt = get_formatted_user_prompt(
-            context, text, source_language, target_language, previous_translations
+            context, text, source_language, target_language,
+            previous_translations, session_memory=session_memory,
         )
 
     response = call_llm(
