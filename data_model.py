@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal
 from pydantic import BaseModel
 
 
@@ -19,7 +20,7 @@ class EntityEntry(BaseModel):
 class CharacterEntry(BaseModel):
     original_name: str
     translated_name: str
-    gender: str   # "male" | "female" | "unknown"
+    gender: Literal["male", "female", "unknown"]
     notes: str = ""
 
 

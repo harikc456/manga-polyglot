@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 from data_model import CharacterEntry, EntityEntry, SessionMemory
 
 
@@ -28,3 +29,13 @@ def test_session_memory_json_schema_has_required_fields():
     assert "places" in props
     assert "organizations" in props
     assert "story_summary" in props
+
+
+def test_character_entry_requires_name_and_gender():
+    with pytest.raises(ValidationError):
+        CharacterEntry(original_name="田中")  # missing translated_name and gender
+
+
+def test_entity_entry_requires_both_fields():
+    with pytest.raises(ValidationError):
+        EntityEntry(original="新宿")  # missing translated
