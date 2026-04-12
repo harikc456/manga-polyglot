@@ -239,7 +239,7 @@ def translate(
         )
 
     response = call_llm(
-        model, SYSTEM_PROMPT, user_prompt, format=Translation.model_json_schema(), image=image
+        model, SYSTEM_PROMPT, user_prompt, format=Translation.model_json_schema(), num_ctx=2048, image=image
     )
     translation = Translation.model_validate_json(response)
 
@@ -291,6 +291,9 @@ def update_session_memory(
     model: str,
     temp_dir: str,
 ) -> SessionMemory:
+    if not translations:
+        return session_memory
+
     current_chars = [
         f"{c.original_name} → {c.translated_name} ({c.gender})" +
         (f", {c.notes}" if c.notes else "")
@@ -332,7 +335,8 @@ Return the complete updated memory as JSON."""
 
     try:
         updated = SessionMemory.model_validate_json(response)
-    except (ValueError, ValidationError):
+    except (ValueError, ValidationError) as e:
+        print(f"[memory] WARNING: Failed to parse LLM memory update response: {e}. Keeping existing memory.")
         updated = session_memory
 
     serialize_memory(updated, os.path.join(temp_dir, "memory.md"))
