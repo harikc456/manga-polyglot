@@ -129,3 +129,31 @@ def test_memory_injected_before_previous_translations():
     memory_pos = prompt.index("Known entities")
     prev_pos = prompt.index("Previous translations")
     assert memory_pos < prev_pos
+
+
+def test_memory_injected_before_previous_translations_with_image():
+    prev = [{"original": "こんにちは", "translated": "Hello"}]
+    prompt = get_formatted_user_prompt_with_image(
+        context="ctx",
+        text="田中はどこだ？",
+        source_language="Japanese",
+        target_language="English",
+        previous_translations=prev,
+        session_memory=_sample_memory(),
+    )
+    memory_pos = prompt.index("Known entities")
+    prev_pos = prompt.index("Previous translations")
+    assert memory_pos < prev_pos
+
+
+def test_prompt_includes_summary_when_only_summary_set():
+    mem = SessionMemory(story_summary="Tanaka arrived in Shinjuku.")
+    prompt = get_formatted_user_prompt(
+        context="ctx",
+        text="田中はどこだ？",
+        source_language="Japanese",
+        target_language="English",
+        session_memory=mem,
+    )
+    assert "Story so far: Tanaka arrived in Shinjuku." in prompt
+    assert "Known entities" not in prompt
