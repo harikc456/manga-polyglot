@@ -1,6 +1,10 @@
+import os
+import tempfile
+
 import pytest
 from pydantic import ValidationError
 from data_model import CharacterEntry, EntityEntry, SessionMemory
+from memory_utils import serialize_memory, load_memory, format_memory_for_prompt
 
 
 def test_character_entry_defaults():
@@ -39,11 +43,6 @@ def test_character_entry_requires_name_and_gender():
 def test_entity_entry_requires_both_fields():
     with pytest.raises(ValidationError):
         EntityEntry(original="新宿")  # missing translated
-
-
-import os
-import tempfile
-from memory_utils import serialize_memory, load_memory, format_memory_for_prompt
 
 
 def _sample_memory() -> SessionMemory:
@@ -111,3 +110,17 @@ def test_serialize_creates_readable_markdown():
     assert "## Organizations" in content
     assert "田中" in content
     assert "Tanaka" in content
+
+
+def test_serialize_load_roundtrip_with_pipe_in_notes():
+    mem = SessionMemory(
+        characters=[CharacterEntry(original_name="田中", translated_name="Tanaka", gender="male", notes="hero | protagonist")],
+        places=[],
+        organizations=[],
+        story_summary="",
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "memory.md")
+        serialize_memory(mem, path)
+        loaded = load_memory(path)
+    assert loaded.characters[0].notes == "hero | protagonist"
