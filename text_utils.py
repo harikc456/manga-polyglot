@@ -153,7 +153,7 @@ def call_llm(
     model: str,
     system_prompt: str,
     user_prompt: str,
-    temperature: float = 0.35,
+    temperature: float = 0.25,
     num_ctx: int = 256,
     frequency_penalty: float = 0.5,
     presence_penalty: float = 1.5,
@@ -195,15 +195,6 @@ def call_llm(
         },
         stream=False,
     )
-
-    print("========================================= LLM Thinking ================================================================")
-    print(response.message.thinking)
-    print("========================================================================================================================")
-
-
-    print("========================================= LLM Response ================================================================")
-    print(response.message.content)
-    print("========================================================================================================================")
 
     return response.message.content
 
