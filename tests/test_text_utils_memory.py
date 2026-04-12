@@ -46,3 +46,11 @@ def test_update_session_memory_falls_back_on_invalid_json():
             original = SessionMemory(story_summary="original summary")
             result = update_session_memory(_make_translations(), original, "test-model", tmpdir)
     assert result.story_summary == "original summary"
+
+
+def test_update_session_memory_falls_back_on_schema_violating_json():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with patch("text_utils.call_llm", return_value='{"characters": null}'):
+            original = SessionMemory(story_summary="original summary")
+            result = update_session_memory(_make_translations(), original, "test-model", tmpdir)
+    assert result.story_summary == "original summary"

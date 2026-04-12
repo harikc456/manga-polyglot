@@ -4,6 +4,7 @@ import jaconv
 import unicodedata
 from PIL import Image
 from ollama import chat, ChatResponse
+from pydantic import ValidationError
 from data_model import Translation, SessionMemory
 from memory_utils import serialize_memory, format_memory_for_prompt
 
@@ -264,7 +265,7 @@ MEMORY_UPDATE_SYSTEM_PROMPT = """
 You are a manga translation assistant responsible for maintaining a translation memory.
 Given the current page's translations and the existing memory state, you must:
 1. Identify new named entities: characters (with gender inferred from speech/context/names), places, organizations
-2. Update existing entries only if a correction is clearly warranted
+2. Preserve ALL entries from the existing memory — never drop an entity just because it does not appear in the current page. Only update an entry if a clear correction is warranted.
 3. Rewrite the story summary to include events from this page (150 words max, cumulative)
 
 Output ONLY valid JSON matching the provided schema. No commentary or explanation.
@@ -290,6 +291,12 @@ def update_session_memory(
         for t in translations
     )
 
+    schema_hint = (
+        '{"characters":[{"original_name":"...","translated_name":"...","gender":"male|female|unknown","notes":"..."}],'
+        '"places":[{"original":"...","translated":"..."}],'
+        '"organizations":[{"original":"...","translated":"..."}],'
+        '"story_summary":"..."}'
+    )
     user_prompt = f"""Current memory state:
 Characters: {', '.join(current_chars) if current_chars else 'none'}
 Places: {', '.join(current_places) if current_places else 'none'}
@@ -299,6 +306,7 @@ Story summary: {session_memory.story_summary or 'none'}
 Current page translations:
 {page_text}
 
+Expected JSON shape: {schema_hint}
 Return the complete updated memory as JSON."""
 
     response = call_llm(
@@ -311,7 +319,7 @@ Return the complete updated memory as JSON."""
 
     try:
         updated = SessionMemory.model_validate_json(response)
-    except Exception:
+    except (ValueError, ValidationError):
         updated = session_memory
 
     serialize_memory(updated, os.path.join(temp_dir, "memory.md"))
