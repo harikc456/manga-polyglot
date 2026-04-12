@@ -27,7 +27,6 @@ def _make_driver_deps():
     return patches
 
 
-@pytest.mark.xfail(strict=True, reason="skip logic not yet implemented — see Task 2")
 def test_translate_not_called_for_existing_output(tmp_path):
     """Pages with an existing output file are skipped — translate() is never called for them."""
     input_dir = tmp_path / "input"

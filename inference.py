@@ -195,6 +195,9 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         img_path = os.path.join(input_dir, img_name)
         out_path = os.path.join(output_dir, img_name)
 
+        if os.path.exists(out_path):
+            continue
+
         # Replace original text with the translated ones
 
         translations = []
