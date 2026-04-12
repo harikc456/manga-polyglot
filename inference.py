@@ -1,44 +1,99 @@
 import os
 import gc
-import time
+import cv2
 import json
 import torch
 import argparse
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
-from collections import deque
 from img_utils import (
+    imread,
     replace_text_with_translation,
     fill_bubble_with_estimated_color,
     get_text_insertion_boxes,
 )
+from transformers import Sam3Processor, Sam3Model
 from transformers import RTDetrV2ForObjectDetection, RTDetrImageProcessor
 from transformers import AutoProcessor, AutoModelForImageTextToText
 from text_detection import detect_text
 
-from text_utils import translate
+from text_utils import translate, update_session_memory
+from data_model import BubbleType, SessionMemory
+from memory_utils import load_memory
 
 
-def clean_page(img_path, temp_dir, boxes):
+
+def clean_text_blocks(img, mask):
+    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    inpainted_telea = cv2.inpaint(img, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+    return inpainted_telea
+
+
+def clean_bubble_free_text(pil_image, box, masked_block):
+    
+    numpy_image = np.array(pil_image)
+    img = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2BGR)
+
+    masked_block = masked_block.cpu().numpy()
+
+    masked_block = (masked_block * 255).astype(np.uint8)
+    
+    x1, y1, x2, y2 = list(map(int, box))
+    cropped_img = img[y1:y2, x1:x2]
+    cleaned_block = clean_text_blocks(cropped_img, masked_block)
+    filtered_block = cv2.medianBlur(cleaned_block, 25)
+    img[y1:y2, x1:x2] = filtered_block
+
+    color_converted_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(color_converted_image)
+    return pil_image
+
+def create_masks(pil_image, box: dict, segmentation_model, segmentation_processor):
+    box = box["original_text_box"]
+    box = list(map(int, box))
+
+    cropped_image = pil_image.crop(box)
+    inputs = segmentation_processor(images=cropped_image, text="manga dialogue letters", return_tensors="pt").to(segmentation_model.device)
+
+    with torch.no_grad():
+        outputs = segmentation_model(**inputs)
+
+    # Post-process results
+    results = segmentation_processor.post_process_instance_segmentation(
+        outputs,
+        threshold=0.5,
+        mask_threshold=0.5,
+        target_sizes=inputs.get("original_sizes").tolist()
+    )[0]
+
+    return results['masks']
+
+def clean_page(img_path: str, temp_dir: str, boxes: list[dict], segmentation_model, segmentation_processor):
     pil_image = Image.open(img_path).convert("RGB")
     file_name = os.path.basename(img_path)
     cleaned_file_path = os.path.join(temp_dir, file_name)
     for box in boxes:
-        pil_image = fill_bubble_with_estimated_color(
-            pil_image, box["original_text_box"]
-        )
+        if box["type"] == BubbleType.FIXED:
+            pil_image = fill_bubble_with_estimated_color(
+                pil_image, box["original_text_box"]
+            )
+        elif box["type"] == BubbleType.FREE:
+            masks = create_masks(pil_image, box, segmentation_model, segmentation_processor)
+            for mask in masks:
+                pil_image = clean_bubble_free_text(pil_image, box["original_text_box"], mask)
 
     pil_image.save(cleaned_file_path)
     return cleaned_file_path
 
 
-def extract_text(img_path, boxes, model, processor):
+def extract_text(img_path: str, boxes: list[dict], model, processor):
     max_pixels = 1280 * 28 * 28
     texts = []
     text_boxes = []
+    img = Image.open(img_path)
     for box in boxes:
         box = box["insertion_polygon"]
-        img = Image.open(img_path)
         cropped_img = img.crop(box)
         cropped_img = cropped_img.convert("L").convert("RGB")
         messages = [
@@ -73,12 +128,17 @@ def extract_text(img_path, boxes, model, processor):
 
 
 def driver(input_dir, temp_dir, output_dir, config, source_language, target_language):
-    context_pages = 3
     ocr_model_id = config["ocr_model"]
     model_id = config["text_detection_model_path"]
     llm_name = config["llm_name"]
     font_path = config["font_path"]
+    image_enabled = config.get("image_enabled", False)
+    memory_path = os.path.join(temp_dir, "memory.md")
+    session_memory = load_memory(memory_path)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    segmentation_model = Sam3Model.from_pretrained("jetjodh/sam3").to(device)
+    segmentation_processor = Sam3Processor.from_pretrained("jetjodh/sam3")
 
     image_processor = RTDetrImageProcessor.from_pretrained(model_id)
     det_model = RTDetrV2ForObjectDetection.from_pretrained(model_id)
@@ -107,7 +167,7 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         boxes = get_text_insertion_boxes(results, expand_ratio=0.8)
 
         ## clean the image to remove the texts
-        cleaned_file_path = clean_page(img_path, temp_dir, boxes)
+        cleaned_file_path = clean_page(img_path, temp_dir, boxes, segmentation_model, segmentation_processor)
 
         # Extract texts from the bounding boxes
         texts, text_boxes = extract_text(img_path, boxes, ocr_model, processor)
@@ -121,15 +181,16 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
 
     del ocr_model
     del det_model
-    torch.cuda.empty_cache()
+    del segmentation_model
     gc.collect()
-    time.sleep(5)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
     lookback_pages = 2
     lookahead_pages = 2
     n_pages = len(img_paths)
 
-    context_list = deque(maxlen=context_pages)
     for i, img_name in enumerate(tqdm(img_paths)):
 
         img_path = os.path.join(input_dir, img_name)
@@ -140,8 +201,6 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         translations = []
         precomputed_vals = computed[img_path]
         cleaned_file_path = computed[img_path]["clean_img_path"]
-        context_list.append(computed[img_path]["page_context"])
-        context = "\n".join(context_list)
 
         # Build context: lookback + current (optional) + lookahead
         context_parts = []
@@ -168,16 +227,38 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         for text, text_box in zip(
             precomputed_vals["texts"], precomputed_vals["text_boxes"]
         ):
+            # Optionally crop and pass image to the translation model
+            image = None
+            if image_enabled:
+                img = Image.open(img_path)
+                image = img.crop(text_box)
+
+            # Build previous translations for consistency
+            previous_translations = []
+            if translations:
+                for prev in translations:
+                    previous_translations.append({
+                        "original": prev["original"],
+                        "translated": prev["translated"]
+                    })
+
             translated = translate(
                 text,
                 llm_name,
                 context=context,
                 source_language=source_language,
                 target_language=target_language,
+                image=image,
+                previous_translations=previous_translations,
+                session_memory=session_memory,
             )
             translations.append(
                 {"original": text, "translated": translated, "polygon": text_box}
             )
+
+        session_memory = update_session_memory(
+            translations, session_memory, llm_name, temp_dir
+        )
 
         translated_image = replace_text_with_translation(
             cleaned_file_path, font_path, translations
@@ -199,7 +280,7 @@ def main():
         "--source-lang",
         type=str,
         help="the directory to which translated images are stored",
-        default="English",
+        default="Japanese",
     )
 
     parser.add_argument(
