@@ -133,6 +133,8 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     llm_name = config["llm_name"]
     font_path = config["font_path"]
     image_enabled = config.get("image_enabled", False)
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir, exist_ok=True)
     memory_path = os.path.join(temp_dir, "memory.md")
     session_memory = load_memory(memory_path)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -151,9 +153,6 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         .eval()
     )
     processor = AutoProcessor.from_pretrained(ocr_model_id)
-
-    if not os.path.exists(temp_dir):
-        os.mkdir(temp_dir)
 
     img_paths = sorted(os.listdir(input_dir))
     computed = {}
@@ -256,9 +255,10 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                 {"original": text, "translated": translated, "polygon": text_box}
             )
 
-        session_memory = update_session_memory(
-            translations, session_memory, llm_name, temp_dir
-        )
+        if translations:
+            session_memory = update_session_memory(
+                translations, session_memory, llm_name, temp_dir
+            )
 
         translated_image = replace_text_with_translation(
             cleaned_file_path, font_path, translations
