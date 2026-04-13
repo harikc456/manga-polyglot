@@ -159,3 +159,70 @@ def test_ocr_cache_written_after_run(tmp_path):
     assert data["texts"] == ["Hello"]
     assert data["text_boxes"] == [[0, 0, 10, 10]]
     assert data["page_context"] == "Hello"
+
+
+def test_ocr_cache_hit_skips_ocr(tmp_path):
+    """detect_text, clean_page, extract_text are not called when a valid OCR cache exists."""
+    import hashlib
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    img_bytes = b"fake image"
+    (input_dir / "page_001.jpg").write_bytes(img_bytes)
+
+    img_hash = hashlib.sha256(img_bytes).hexdigest()
+    cache = {
+        "hash": img_hash,
+        "texts": ["cached text"],
+        "text_boxes": [[0, 0, 5, 5]],
+        "page_context": "cached text",
+    }
+    (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache))
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    patches["inference.detect_text"].assert_not_called()
+    patches["inference.clean_page"].assert_not_called()
+    patches["inference.extract_text"].assert_not_called()
+
+
+def test_ocr_cache_miss_on_hash_mismatch(tmp_path):
+    """OCR runs when cache exists but hash doesn't match (input image changed)."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    (input_dir / "page_001.jpg").write_bytes(b"new content")
+
+    stale_cache = {
+        "hash": "a" * 64,
+        "texts": ["old text"],
+        "text_boxes": [],
+        "page_context": "old text",
+    }
+    (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(stale_cache))
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    patches["inference.extract_text"].assert_called_once()

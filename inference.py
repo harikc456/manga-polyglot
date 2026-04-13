@@ -169,6 +169,20 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         cache_path = os.path.join(temp_dir, img_name + ".ocr.json")
         current_hash = _file_hash(img_path)
 
+        if os.path.exists(cache_path):
+            with open(cache_path) as f:
+                cached = json.load(f)
+            if cached.get("hash") == current_hash:
+                computed[img_path] = {
+                    "texts": cached["texts"],
+                    "text_boxes": cached["text_boxes"],
+                    "page_context": cached["page_context"],
+                    "clean_img_path": os.path.join(temp_dir, img_name),
+                    "cache_path": cache_path,
+                    "hash": current_hash,
+                }
+                continue
+
         results = detect_text(img_path, det_model, image_processor)
         boxes = get_text_insertion_boxes(results, expand_ratio=0.8)
         cleaned_file_path = clean_page(img_path, temp_dir, boxes, segmentation_model, segmentation_processor)
