@@ -166,23 +166,31 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     computed = {}
     for img_name in tqdm(img_paths):
         img_path = os.path.join(input_dir, img_name)
-
-        computed[img_path] = {}
+        cache_path = os.path.join(temp_dir, img_name + ".ocr.json")
+        current_hash = _file_hash(img_path)
 
         results = detect_text(img_path, det_model, image_processor)
-
         boxes = get_text_insertion_boxes(results, expand_ratio=0.8)
-
-        ## clean the image to remove the texts
         cleaned_file_path = clean_page(img_path, temp_dir, boxes, segmentation_model, segmentation_processor)
-
-        # Extract texts from the bounding boxes
         texts, text_boxes = extract_text(img_path, boxes, ocr_model, processor)
+        page_context = "\n\n".join(texts)
 
-        computed[img_path]["texts"] = texts
-        computed[img_path]["text_boxes"] = text_boxes
-        computed[img_path]["page_context"] = "\n\n".join(texts)
-        computed[img_path]["clean_img_path"] = cleaned_file_path
+        computed[img_path] = {
+            "texts": texts,
+            "text_boxes": text_boxes,
+            "page_context": page_context,
+            "clean_img_path": cleaned_file_path,
+            "cache_path": cache_path,
+            "hash": current_hash,
+        }
+
+        with open(cache_path, "w") as f:
+            json.dump({
+                "hash": current_hash,
+                "texts": texts,
+                "text_boxes": [list(b) for b in text_boxes],
+                "page_context": page_context,
+            }, f)
 
     ## Removing models from GPU to make space for the LLM
 

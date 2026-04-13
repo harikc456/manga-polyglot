@@ -129,3 +129,34 @@ def test_file_hash_differs_for_different_content(tmp_path):
     f1.write_bytes(b"content A")
     f2.write_bytes(b"content B")
     assert _file_hash(str(f1)) != _file_hash(str(f2))
+
+
+import json
+
+def test_ocr_cache_written_after_run(tmp_path):
+    """A .ocr.json cache file is written to temp_dir for each page after a run."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    (input_dir / "page_001.jpg").write_bytes(b"fake image")
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    cache_path = tmp_path / "temp" / "page_001.jpg.ocr.json"
+    assert cache_path.exists()
+    data = json.loads(cache_path.read_text())
+    assert len(data["hash"]) == 64
+    assert data["texts"] == ["Hello"]
+    assert data["text_boxes"] == [[0, 0, 10, 10]]
+    assert data["page_context"] == "Hello"
