@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import pytest
@@ -130,8 +131,6 @@ def test_file_hash_differs_for_different_content(tmp_path):
     f2.write_bytes(b"content B")
     assert _file_hash(str(f1)) != _file_hash(str(f2))
 
-
-import json
 
 def test_ocr_cache_written_after_run(tmp_path):
     """A .ocr.json cache file is written to temp_dir for each page after a run."""
