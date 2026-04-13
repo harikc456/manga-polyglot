@@ -238,6 +238,31 @@ def test_ocr_cache_hit_skips_ocr(tmp_path):
     patches["inference.extract_text"].assert_not_called()
 
 
+def test_cache_marked_translated_after_save(tmp_path):
+    """Cache file has translated:true after a page is successfully translated."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    (input_dir / "page_001.jpg").write_bytes(b"fake image")
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    cache_path = tmp_path / "temp" / "page_001.jpg.ocr.json"
+    data = json.loads(cache_path.read_text())
+    assert data.get("translated") is True
+
+
 def test_ocr_cache_miss_on_hash_mismatch(tmp_path):
     """OCR runs when cache exists but hash doesn't match (input image changed)."""
     input_dir = tmp_path / "input"

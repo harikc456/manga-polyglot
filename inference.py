@@ -302,6 +302,12 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         )
         translated_image.save(out_path)
 
+        with open(computed[img_path]["cache_path"]) as f:
+            cache_data = json.load(f)
+        cache_data["translated"] = True
+        with open(computed[img_path]["cache_path"], "w") as f:
+            json.dump(cache_data, f)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Inputs to translate")
