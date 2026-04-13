@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -163,7 +164,6 @@ def test_ocr_cache_written_after_run(tmp_path):
 
 def test_ocr_cache_hit_skips_ocr(tmp_path):
     """detect_text, clean_page, extract_text are not called when a valid OCR cache exists."""
-    import hashlib
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     temp_dir = tmp_path / "temp"
@@ -171,6 +171,9 @@ def test_ocr_cache_hit_skips_ocr(tmp_path):
 
     img_bytes = b"fake image"
     (input_dir / "page_001.jpg").write_bytes(img_bytes)
+
+    # Pre-populate the cleaned image so the cache hit condition is satisfied
+    (temp_dir / "page_001.jpg").write_bytes(img_bytes)
 
     img_hash = hashlib.sha256(img_bytes).hexdigest()
     cache = {

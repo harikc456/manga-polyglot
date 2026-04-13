@@ -172,12 +172,13 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         if os.path.exists(cache_path):
             with open(cache_path) as f:
                 cached = json.load(f)
-            if cached.get("hash") == current_hash:
+            clean_img_path = os.path.join(temp_dir, img_name)
+            if cached.get("hash") == current_hash and os.path.exists(clean_img_path):
                 computed[img_path] = {
                     "texts": cached["texts"],
                     "text_boxes": cached["text_boxes"],
                     "page_context": cached["page_context"],
-                    "clean_img_path": os.path.join(temp_dir, img_name),
+                    "clean_img_path": clean_img_path,
                     "cache_path": cache_path,
                     "hash": current_hash,
                 }
