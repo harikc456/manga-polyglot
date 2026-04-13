@@ -5,6 +5,7 @@ import json
 import torch
 import argparse
 import numpy as np
+import hashlib
 from PIL import Image
 from tqdm import tqdm
 from img_utils import (
@@ -22,6 +23,13 @@ from text_utils import translate, update_session_memory
 from data_model import BubbleType, SessionMemory
 from memory_utils import load_memory
 
+
+def _file_hash(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def clean_text_blocks(img, mask):

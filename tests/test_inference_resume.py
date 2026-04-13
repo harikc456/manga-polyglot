@@ -1,8 +1,24 @@
 import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
+
+# Mock heavy dependencies before importing inference
+sys.modules['cv2'] = MagicMock()
+sys.modules['torch'] = MagicMock()
+sys.modules['numpy'] = MagicMock()
+sys.modules['transformers'] = MagicMock()
+sys.modules['PIL'] = MagicMock()
+sys.modules['PIL.Image'] = MagicMock()
+sys.modules['tqdm'] = MagicMock()
+sys.modules['img_utils'] = MagicMock()
+sys.modules['text_detection'] = MagicMock()
+sys.modules['text_utils'] = MagicMock()
+sys.modules['data_model'] = MagicMock()
+sys.modules['memory_utils'] = MagicMock()
+
 import inference
-from inference import driver
+from inference import driver, _file_hash
 
 def _make_driver_deps():
     """Return the minimal mock set needed to run driver() without real models."""
@@ -92,3 +108,23 @@ def test_all_pages_translated_when_no_output_exists(tmp_path):
 
     translate_mock = patches["inference.translate"]
     assert translate_mock.call_count == 2
+
+
+def test_file_hash_consistent(tmp_path):
+    f = tmp_path / "img.jpg"
+    f.write_bytes(b"fake image data")
+    assert _file_hash(str(f)) == _file_hash(str(f))
+
+
+def test_file_hash_is_64_chars(tmp_path):
+    f = tmp_path / "img.jpg"
+    f.write_bytes(b"fake image data")
+    assert len(_file_hash(str(f))) == 64
+
+
+def test_file_hash_differs_for_different_content(tmp_path):
+    f1 = tmp_path / "a.jpg"
+    f2 = tmp_path / "b.jpg"
+    f1.write_bytes(b"content A")
+    f2.write_bytes(b"content B")
+    assert _file_hash(str(f1)) != _file_hash(str(f2))
