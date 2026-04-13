@@ -236,6 +236,7 @@ def test_ocr_cache_hit_skips_ocr(tmp_path):
     patches["inference.detect_text"].assert_not_called()
     patches["inference.clean_page"].assert_not_called()
     patches["inference.extract_text"].assert_not_called()
+    patches["inference.translate"].assert_called_once()
 
 
 def test_cache_marked_translated_after_save(tmp_path):
