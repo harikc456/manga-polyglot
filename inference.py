@@ -226,7 +226,10 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         img_path = os.path.join(input_dir, img_name)
         out_path = os.path.join(output_dir, img_name)
 
-        if os.path.exists(out_path):
+        cache_path = computed[img_path]["cache_path"]
+        with open(cache_path) as f:
+            cache_data = json.load(f)
+        if cache_data.get("hash") == computed[img_path]["hash"] and cache_data.get("translated"):
             continue
 
         # Replace original text with the translated ones

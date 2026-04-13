@@ -46,40 +46,78 @@ def _make_driver_deps():
     return patches
 
 
-def test_translate_not_called_for_existing_output(tmp_path):
-    """Pages with an existing output file are skipped — translate() is never called for them."""
+def test_translate_not_called_for_translated_cache(tmp_path):
+    """Pages with translated:true in their cache are skipped — translate() not called for them."""
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     temp_dir = tmp_path / "temp"
-    input_dir.mkdir()
-    output_dir.mkdir()
-    temp_dir.mkdir()
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
 
-    # Create two input images
-    (input_dir / "page_001.jpg").write_bytes(b"fake")
-    (input_dir / "page_002.jpg").write_bytes(b"fake")
+    page1_bytes = b"fake page 1"
+    page2_bytes = b"fake page 2"
+    (input_dir / "page_001.jpg").write_bytes(page1_bytes)
+    (input_dir / "page_002.jpg").write_bytes(page2_bytes)
 
-    # page_001 is already translated
-    (output_dir / "page_001.jpg").write_bytes(b"done")
+    # page_001 already translated — write its cache with translated:true
+    page1_hash = hashlib.sha256(page1_bytes).hexdigest()
+    cache_001 = {
+        "hash": page1_hash,
+        "texts": ["Hello"],
+        "text_boxes": [[0, 0, 10, 10]],
+        "page_context": "Hello",
+        "translated": True,
+    }
+    (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache_001))
+    # Also write the cleaned image so the cache hit is valid
+    (temp_dir / "page_001.jpg").write_bytes(b"cleaned")
 
     config = {
-        "text_detection_model_path": "dummy",
-        "ocr_model": "dummy",
-        "llm_name": "dummy",
-        "font_path": "dummy",
-        "image_enabled": False,
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
     }
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
-         patch("torch.cuda.synchronize"), \
-         patch("torch.cuda.empty_cache"):
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
         driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
 
-    translate_mock = patches["inference.translate"]
-    # translate() should have been called exactly once — for page_002 only
-    assert translate_mock.call_count == 1
+    # translate() called exactly once — for page_002 only
+    assert patches["inference.translate"].call_count == 1
+
+
+def test_translate_reruns_when_input_image_changes(tmp_path):
+    """Translation re-runs when the input image hash doesn't match, even if an output file exists."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    (input_dir / "page_001.jpg").write_bytes(b"new content")
+    # Output file exists — should be ignored because hash won't match
+    (output_dir / "page_001.jpg").write_bytes(b"old translated output")
+
+    stale_cache = {
+        "hash": "a" * 64,  # wrong hash
+        "texts": ["old"],
+        "text_boxes": [[0, 0, 10, 10]],
+        "page_context": "old",
+        "translated": True,
+    }
+    (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(stale_cache))
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    assert patches["inference.translate"].call_count == 1
 
 
 def test_all_pages_translated_when_no_output_exists(tmp_path):
