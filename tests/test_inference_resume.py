@@ -38,6 +38,7 @@ def _make_driver_deps():
         "inference.update_session_memory": MagicMock(return_value=MagicMock()),
         "inference.replace_text_with_translation": MagicMock(return_value=MagicMock()),
         "inference.load_memory": MagicMock(return_value=MagicMock()),
+        "inference.tqdm": MagicMock(side_effect=lambda x: x),
         "torch.cuda.is_available": MagicMock(return_value=False),
     }
     return patches
