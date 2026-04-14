@@ -5,22 +5,29 @@ import sys
 import pytest
 from unittest.mock import patch, MagicMock
 
-# Mock heavy dependencies before importing inference
-sys.modules['cv2'] = MagicMock()
-sys.modules['torch'] = MagicMock()
-sys.modules['numpy'] = MagicMock()
-sys.modules['transformers'] = MagicMock()
-sys.modules['PIL'] = MagicMock()
-sys.modules['PIL.Image'] = MagicMock()
-sys.modules['tqdm'] = MagicMock()
-sys.modules['img_utils'] = MagicMock()
-sys.modules['text_detection'] = MagicMock()
-sys.modules['text_utils'] = MagicMock()
-sys.modules['data_model'] = MagicMock()
-sys.modules['memory_utils'] = MagicMock()
+# Mock heavy dependencies only for the duration of `import inference`
+_MOCKS = {
+    'cv2': MagicMock(),
+    'torch': MagicMock(),
+    'numpy': MagicMock(),
+    'transformers': MagicMock(),
+    'PIL': MagicMock(),
+    'PIL.Image': MagicMock(),
+    'tqdm': MagicMock(),
+    'img_utils': MagicMock(),
+    'text_detection': MagicMock(),
+    'text_utils': MagicMock(),
+    'data_model': MagicMock(),
+    'memory_utils': MagicMock(),
+}
 
-import inference
-from inference import driver, _file_hash
+with patch.dict(sys.modules, _MOCKS):
+    import inference
+    from inference import driver, _file_hash
+
+# Re-register the inference module so patch.multiple("inference", ...) in tests
+# can find and patch the same module object that driver() was imported from.
+sys.modules['inference'] = inference
 
 def _make_driver_deps():
     """Return the minimal mock set needed to run driver() without real models."""
