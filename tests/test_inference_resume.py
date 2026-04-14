@@ -349,6 +349,6 @@ def test_translate_called_with_use_json_false_when_json_disabled(tmp_path):
         driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
 
     translate_mock = patches["inference.translate"]
-    assert translate_mock.call_count >= 1
+    assert translate_mock.call_count == 1
     for call in translate_mock.call_args_list:
         assert call.kwargs.get("use_json") is False
