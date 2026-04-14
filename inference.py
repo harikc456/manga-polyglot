@@ -141,10 +141,12 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     llm_name = config["llm_name"]
     font_path = config["font_path"]
     image_enabled = config.get("image_enabled", False)
+    json_enabled = config.get("json_enabled", True)
+    memory_enabled = config.get("memory_enabled", True)
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir, exist_ok=True)
     memory_path = os.path.join(temp_dir, "memory.md")
-    session_memory = load_memory(memory_path)
+    session_memory = load_memory(memory_path) if memory_enabled else None
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     segmentation_model = Sam3Model.from_pretrained("jetjodh/sam3").to(device)
@@ -287,12 +289,13 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                 image=image,
                 previous_translations=previous_translations,
                 session_memory=session_memory,
+                use_json=json_enabled,
             )
             translations.append(
                 {"original": text, "translated": translated, "polygon": text_box}
             )
 
-        if translations:
+        if translations and memory_enabled:
             session_memory = update_session_memory(
                 translations, session_memory, llm_name, temp_dir
             )

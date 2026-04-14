@@ -1,6 +1,9 @@
 {
     "text_detection_model_path": "ogkalu/comic-text-and-bubble-detector",
     "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
-    "llm_name": "qwen3:30b-a3b-instruct-2507-q4_K_M",
-    "font_path": "./fonts/animeace2_bld.otf"
-}   
+    "llm_name": "gemma4:26b-a4b-it-q4_K_M",
+    "font_path": "./fonts/animeace2_bld.otf",
+    "image_enabled": false,
+    "json_enabled": true,
+    "memory_enabled": true
+}

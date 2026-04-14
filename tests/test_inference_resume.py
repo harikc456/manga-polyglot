@@ -300,3 +300,55 @@ def test_ocr_cache_miss_on_hash_mismatch(tmp_path):
         driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
 
     patches["inference.extract_text"].assert_called_once()
+
+
+def test_memory_not_loaded_or_updated_when_memory_disabled(tmp_path):
+    """When memory_enabled=False, load_memory and update_session_memory are never called."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    (input_dir / "page_001.jpg").write_bytes(b"fake image")
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+        "memory_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    patches["inference.load_memory"].assert_not_called()
+    patches["inference.update_session_memory"].assert_not_called()
+
+
+def test_translate_called_with_use_json_false_when_json_disabled(tmp_path):
+    """When json_enabled=False, translate() is called with use_json=False for every page."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
+
+    (input_dir / "page_001.jpg").write_bytes(b"fake image")
+
+    config = {
+        "text_detection_model_path": "d", "ocr_model": "d",
+        "llm_name": "d", "font_path": "d", "image_enabled": False,
+        "json_enabled": False,
+    }
+
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+
+    translate_mock = patches["inference.translate"]
+    assert translate_mock.call_count >= 1
+    for call in translate_mock.call_args_list:
+        assert call.kwargs.get("use_json") is False
