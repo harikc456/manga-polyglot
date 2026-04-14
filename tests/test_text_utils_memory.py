@@ -2,6 +2,7 @@ from unittest.mock import patch
 from data_model import CharacterEntry, EntityEntry, SessionMemory
 from text_utils import update_session_memory, get_formatted_user_prompt, get_formatted_user_prompt_with_image
 import tempfile, os
+from text_utils import get_formatted_user_prompt_plain, translate
 
 
 def _make_translations():
@@ -155,3 +156,40 @@ def test_prompt_includes_summary_when_only_summary_set():
     )
     assert "Story so far: Tanaka arrived in Shinjuku." in prompt
     assert "Known entities" not in prompt
+
+
+def test_plain_prompt_has_output_only_instruction():
+    prompt = get_formatted_user_prompt_plain(
+        context="ctx",
+        text="こんにちは",
+        source_language="Japanese",
+        target_language="English",
+    )
+    assert "Output ONLY the translated text" in prompt
+    assert "JSON" not in prompt
+
+
+def test_translate_plain_calls_llm_without_format():
+    with patch("text_utils.call_llm", return_value="Hello") as mock_llm:
+        result = translate(
+            "こんにちは",
+            model="test-model",
+            context="ctx",
+            source_language="Japanese",
+            use_json=False,
+        )
+    assert mock_llm.call_args.kwargs.get("format") is None
+    assert result == "Hello"
+
+
+def test_translate_plain_no_fallback():
+    with patch("text_utils.call_llm", return_value="this is a translation"), \
+         patch("text_utils.fallback_translation") as mock_fallback:
+        translate(
+            "こんにちは",
+            model="test-model",
+            context="ctx",
+            source_language="Japanese",
+            use_json=False,
+        )
+    mock_fallback.assert_not_called()

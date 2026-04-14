@@ -129,6 +129,22 @@ def get_formatted_user_prompt_with_image(
     return prompt
 
 
+def get_formatted_user_prompt_plain(
+    context: str,
+    text: str,
+    source_language: str,
+    target_language: str,
+    previous_translations: list = None,
+    session_memory: "SessionMemory | None" = None,
+) -> str:
+    prompt = _build_prompt_base(
+        context, text, source_language, target_language,
+        previous_translations, session_memory,
+    )
+    prompt += "Output ONLY the translated text. No explanation, no commentary."
+    return prompt
+
+
 def clean_translated_text(text: str) -> str:
     """Clean model output: remove newlines, XML tags, quotes, and prefixes."""
 
@@ -208,6 +224,7 @@ def translate(
     image: Image.Image = None,
     previous_translations: list = None,
     session_memory: SessionMemory = None,
+    use_json: bool = True,
 ) -> str:
     # Normalize non-Japanese text early
     if not contains_japanese(text):
@@ -216,40 +233,45 @@ def translate(
     text = clean_ocr_garbage(text)
     text = post_process(text)
 
-    # Main translation call
-    if image is not None:
-        print("Using image for translation...")
-        user_prompt = get_formatted_user_prompt_with_image(
-            context, text, source_language, target_language,
-            previous_translations, session_memory=session_memory,
+    if use_json:
+        if image is not None:
+            print("Using image for translation...")
+            user_prompt = get_formatted_user_prompt_with_image(
+                context, text, source_language, target_language,
+                previous_translations, session_memory=session_memory,
+            )
+        else:
+            user_prompt = get_formatted_user_prompt(
+                context, text, source_language, target_language,
+                previous_translations, session_memory=session_memory,
+            )
+        response = call_llm(
+            model, SYSTEM_PROMPT, user_prompt,
+            format=Translation.model_json_schema(), num_ctx=2048, image=image,
         )
+        translation = Translation.model_validate_json(response)
+        cleaned_text = clean_translated_text(translation.translated_text)
+
+        if (
+            "translat" in cleaned_text.lower()
+            or "onomatopoeia" in cleaned_text.lower()
+            or contains_japanese(cleaned_text)
+        ):
+            cleaned_text = fallback_translation(
+                text, model, source_language, target_language, image
+            )
     else:
-        user_prompt = get_formatted_user_prompt(
+        user_prompt = get_formatted_user_prompt_plain(
             context, text, source_language, target_language,
             previous_translations, session_memory=session_memory,
         )
+        response = call_llm(
+            model, SYSTEM_PROMPT, user_prompt, num_ctx=2048, image=image,
+        )
+        cleaned_text = clean_translated_text(response)
 
-    response = call_llm(
-        model, SYSTEM_PROMPT, user_prompt, format=Translation.model_json_schema(), num_ctx=2048, image=image
-    )
-    translation = Translation.model_validate_json(response)
-
-    cleaned_text = translation.translated_text
-    cleaned_text = clean_translated_text(cleaned_text)
-
-    # Debug prints (optional — comment out in production)
     print(f"Input: {text}")
     print(f"Output: {cleaned_text}\n")
-
-    # Fallback if translation failed (contains trigger words or Japanese)
-    if (
-        "translat" in cleaned_text.lower()
-        or "onomatopoeia" in cleaned_text.lower()
-        or contains_japanese(cleaned_text)
-    ):
-        cleaned_text = fallback_translation(
-            text, model, source_language, target_language, image
-        )
 
     return cleaned_text
 
