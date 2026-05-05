@@ -46,6 +46,47 @@ def create_app(input_dir: Path, temp_dir: Path, output_dir: Path) -> FastAPI:
             for name in _page_names()
         ]
 
+    def _serve_image(path: Path) -> Response:
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=str(path.name))
+        suffix = path.suffix.lower()
+        media = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
+        return Response(content=path.read_bytes(), media_type=media)
+
+    @app.get("/image/original/{name}")
+    def image_original(name: str):
+        return _serve_image(input_dir / name)
+
+    @app.get("/image/cleaned/{name}")
+    def image_cleaned(name: str):
+        return _serve_image(temp_dir / name)
+
+    @app.get("/image/output/{name}")
+    def image_output(name: str):
+        return _serve_image(output_dir / name)
+
+    @app.get("/image/thumbnail/{name}")
+    def image_thumbnail(name: str):
+        return _serve_image(input_dir / name)
+
+    @app.get("/image/detection/{name}")
+    def image_detection(name: str):
+        orig_path = input_dir / name
+        if not orig_path.exists():
+            raise HTTPException(status_code=404, detail=name)
+        cache = _read_cache(name)
+        img = Image.open(orig_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        for box in cache.get("boxes", []):
+            color = "red" if box.get("type") == "fixed" else "orange"
+            x1, y1, x2, y2 = box["original_text_box"]
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+            conf = box.get("confidence", 0)
+            draw.text((x1, max(0, y1 - 12)), f"{conf:.2f}", fill=color)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return Response(content=buf.getvalue(), media_type="image/png")
+
     frontend_dir = Path(__file__).parent / "review_frontend"
     if frontend_dir.exists():
         app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
