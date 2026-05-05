@@ -80,3 +80,32 @@ def test_pages_reflects_review_log(dirs):
     c = TestClient(app)
     resp = c.get("/api/pages")
     assert resp.json()[0]["status"] == "flagged"
+
+
+def test_image_original(client):
+    resp = client.get("/image/original/001.jpg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/")
+
+
+def test_image_cleaned(client):
+    resp = client.get("/image/cleaned/001.jpg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/")
+
+
+def test_image_output(client):
+    resp = client.get("/image/output/001.jpg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("image/")
+
+
+def test_image_detection(client):
+    resp = client.get("/image/detection/001.jpg")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+
+def test_image_missing_returns_404(client):
+    resp = client.get("/image/original/missing.jpg")
+    assert resp.status_code == 404
