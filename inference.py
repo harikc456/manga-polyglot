@@ -26,7 +26,7 @@ def _file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def spot_text(img_path: str, model, processor, max_tokens: int = 2048) -> str:
+def spot_text(img_path: str, model, processor, max_tokens: int = 512) -> str:
     image = Image.open(img_path).convert("RGB")
     max_pixels = 2048 * 28 * 28
     messages = [
@@ -83,7 +83,8 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     json_enabled = config.get("json_enabled", True)
     memory_enabled = config.get("memory_enabled", True)
     cluster_eps = config.get("spotting_cluster_eps", 80)
-    max_tokens = config.get("spotting_max_tokens", 2048)
+    max_tokens = config.get("spotting_max_tokens", 512)
+    # Dense pages (many sound effects/narration boxes) can approach this limit; raise in config.json if spotting looks incomplete.
 
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir, exist_ok=True)
