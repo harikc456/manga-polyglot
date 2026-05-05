@@ -10,4 +10,7 @@ dependencies = [
     "Pillow",
     "tqdm",
     "scipy",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
 ]
