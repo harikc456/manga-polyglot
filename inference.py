@@ -187,7 +187,16 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                 continue
 
         results = detect_text(img_path, det_model, image_processor)
-        boxes = get_text_insertion_boxes(results, expand_ratio=0.8)
+        boxes = get_text_insertion_boxes(results, expand_ratio=0.65)
+        serialized_boxes = [
+            {
+                "original_text_box": b["original_text_box"],
+                "insertion_polygon": b["insertion_polygon"],
+                "confidence": b["confidence"],
+                "type": b["type"].value,
+            }
+            for b in boxes
+        ]
         cleaned_file_path = clean_page(img_path, temp_dir, boxes, segmentation_model, segmentation_processor)
         texts, text_boxes = extract_text(img_path, boxes, ocr_model, processor)
         page_context = "\n\n".join(texts)
@@ -207,6 +216,7 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                 "texts": texts,
                 "text_boxes": [list(b) for b in text_boxes],
                 "page_context": page_context,
+                "boxes": serialized_boxes,
             }, f)
 
     ## Removing models from GPU to make space for the LLM
@@ -306,6 +316,10 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         translated_image.save(out_path)
 
         cache_data["translated"] = True
+        cache_data["translations"] = [
+            {"original": t["original"], "translated": t["translated"]}
+            for t in translations
+        ]
         with open(computed[img_path]["cache_path"], "w") as f:
             json.dump(cache_data, f)
 
