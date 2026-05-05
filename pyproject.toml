@@ -13,4 +13,11 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "httpx",
+    "numpy",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
 ]
