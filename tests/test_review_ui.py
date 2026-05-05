@@ -109,3 +109,36 @@ def test_image_detection(client):
 def test_image_missing_returns_404(client):
     resp = client.get("/image/original/missing.jpg")
     assert resp.status_code == 404
+
+
+def test_page_detail(client):
+    resp = client.get("/api/page/001.jpg")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "001.jpg"
+    assert data["texts"] == ["こんにちは"]
+    assert len(data["boxes"]) == 1
+    assert data["boxes"][0]["confidence"] == 0.94
+    assert data["translations"] == [{"original": "こんにちは", "translated": "Hello!"}]
+    assert data["review"]["status"] == "unseen"
+
+
+def test_save_review(client, dirs):
+    _, temp_dir, _ = dirs
+    resp = client.post("/api/review/001.jpg", json={"status": "flagged", "notes": "bad bubble"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    log = json.loads((temp_dir / "review_log.json").read_text())
+    assert log["001.jpg"]["status"] == "flagged"
+    assert log["001.jpg"]["notes"] == "bad bubble"
+    assert "timestamp" in log["001.jpg"]
+
+
+def test_export(client, dirs):
+    _, temp_dir, _ = dirs
+    client.post("/api/review/001.jpg", json={"status": "approved", "notes": ""})
+    resp = client.get("/api/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    data = resp.json()
+    assert "001.jpg" in data

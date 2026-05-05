@@ -87,6 +87,33 @@ def create_app(input_dir: Path, temp_dir: Path, output_dir: Path) -> FastAPI:
         img.save(buf, format="PNG")
         return Response(content=buf.getvalue(), media_type="image/png")
 
+    @app.get("/api/page/{name}")
+    def page_detail(name: str):
+        cache = _read_cache(name)
+        return {
+            "name": name,
+            "texts": cache.get("texts", []),
+            "text_boxes": cache.get("text_boxes", []),
+            "boxes": cache.get("boxes", []),
+            "translations": cache.get("translations", []),
+            "translated": cache.get("translated", False),
+            "review": review_log.get(name, {"status": "unseen", "notes": "", "timestamp": None}),
+        }
+
+    @app.post("/api/review/{name}")
+    def save_review(name: str, body: ReviewBody):
+        review_log[name] = {
+            "status": body.status,
+            "notes": body.notes,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+        _save_review_log()
+        return {"ok": True}
+
+    @app.get("/api/export")
+    def export_log():
+        return JSONResponse(content=review_log)
+
     frontend_dir = Path(__file__).parent / "review_frontend"
     if frontend_dir.exists():
         app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
