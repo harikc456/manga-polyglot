@@ -1,11 +1,9 @@
 import hashlib
 import json
-import os
 import sys
-import pytest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Mock heavy dependencies only for the duration of `import inference`
 _MOCKS = {
     'cv2': MagicMock(),
     'torch': MagicMock(),
@@ -15,7 +13,7 @@ _MOCKS = {
     'PIL.Image': MagicMock(),
     'tqdm': MagicMock(),
     'img_utils': MagicMock(),
-    'text_detection': MagicMock(),
+    'ocr_utils': MagicMock(),
     'text_utils': MagicMock(),
     'data_model': MagicMock(),
     'memory_utils': MagicMock(),
@@ -25,32 +23,34 @@ with patch.dict(sys.modules, _MOCKS):
     import inference
     from inference import driver, _file_hash
 
-# Re-register the inference module so patch.multiple("inference", ...) in tests
-# can find and patch the same module object that driver() was imported from.
 sys.modules['inference'] = inference
 
+_FAKE_SPOTTING_RAW = "HELLO<|LOC_100|><|LOC_100|><|LOC_200|><|LOC_100|><|LOC_200|><|LOC_200|><|LOC_100|><|LOC_200|>"
+_FAKE_BOXES = [{"text": "Hello", "insertion_polygon": [0, 0, 10, 10]}]
+
+
 def _make_driver_deps():
-    """Return the minimal mock set needed to run driver() without real models."""
-    # Patch all heavy imports inside inference
     patches = {
-        "inference.Sam3Model": MagicMock(),
-        "inference.Sam3Processor": MagicMock(),
-        "inference.RTDetrV2ForObjectDetection": MagicMock(),
-        "inference.RTDetrImageProcessor": MagicMock(),
         "inference.AutoModelForImageTextToText": MagicMock(),
         "inference.AutoProcessor": MagicMock(),
-        "inference.detect_text": MagicMock(return_value=[]),
-        "inference.get_text_insertion_boxes": MagicMock(return_value=[]),
+        "inference.spot_text": MagicMock(return_value=_FAKE_SPOTTING_RAW),
+        "inference._cluster_boxes": MagicMock(return_value=_FAKE_BOXES),
         "inference.clean_page": MagicMock(side_effect=lambda img_path, temp_dir, *a, **kw: img_path),
-        "inference.extract_text": MagicMock(return_value=(["Hello"], [(0, 0, 10, 10)])),
         "inference.translate": MagicMock(return_value="こんにちは"),
         "inference.update_session_memory": MagicMock(return_value=MagicMock()),
         "inference.replace_text_with_translation": MagicMock(return_value=MagicMock()),
         "inference.load_memory": MagicMock(return_value=MagicMock()),
         "inference.tqdm": MagicMock(side_effect=lambda x: x),
-        "torch.cuda.is_available": MagicMock(return_value=False),
     }
     return patches
+
+
+_BASE_CONFIG = {
+    "ocr_model": "d",
+    "llm_name": "d",
+    "font_path": "d",
+    "image_enabled": False,
+}
 
 
 def test_translate_not_called_for_translated_cache(tmp_path):
@@ -65,31 +65,25 @@ def test_translate_not_called_for_translated_cache(tmp_path):
     (input_dir / "page_001.jpg").write_bytes(page1_bytes)
     (input_dir / "page_002.jpg").write_bytes(page2_bytes)
 
-    # page_001 already translated — write its cache with translated:true
     page1_hash = hashlib.sha256(page1_bytes).hexdigest()
     cache_001 = {
         "hash": page1_hash,
         "texts": ["Hello"],
         "text_boxes": [[0, 0, 10, 10]],
         "page_context": "Hello",
+        "spotting_raw": _FAKE_SPOTTING_RAW,
+        "cluster_eps": 80,
         "translated": True,
     }
     (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache_001))
-    # Also write the cleaned image so the cache hit is valid
     (temp_dir / "page_001.jpg").write_bytes(b"cleaned")
-
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-    }
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
-    # translate() called exactly once — for page_002 only
     assert patches["inference.translate"].call_count == 1
 
 
@@ -101,28 +95,24 @@ def test_translate_reruns_when_input_image_changes(tmp_path):
     input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
 
     (input_dir / "page_001.jpg").write_bytes(b"new content")
-    # Output file exists — should be ignored because hash won't match
     (output_dir / "page_001.jpg").write_bytes(b"old translated output")
 
     stale_cache = {
-        "hash": "a" * 64,  # wrong hash
+        "hash": "a" * 64,
         "texts": ["old"],
         "text_boxes": [[0, 0, 10, 10]],
         "page_context": "old",
+        "spotting_raw": _FAKE_SPOTTING_RAW,
+        "cluster_eps": 80,
         "translated": True,
     }
     (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(stale_cache))
-
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-    }
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
     assert patches["inference.translate"].call_count == 1
 
@@ -132,30 +122,18 @@ def test_all_pages_translated_when_no_output_exists(tmp_path):
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     temp_dir = tmp_path / "temp"
-    input_dir.mkdir()
-    output_dir.mkdir()
-    temp_dir.mkdir()
+    input_dir.mkdir(); output_dir.mkdir(); temp_dir.mkdir()
 
     (input_dir / "page_001.jpg").write_bytes(b"fake")
     (input_dir / "page_002.jpg").write_bytes(b"fake")
 
-    config = {
-        "text_detection_model_path": "dummy",
-        "ocr_model": "dummy",
-        "llm_name": "dummy",
-        "font_path": "dummy",
-        "image_enabled": False,
-    }
-
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
-         patch("torch.cuda.synchronize"), \
-         patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
-    translate_mock = patches["inference.translate"]
-    assert translate_mock.call_count == 2
+    assert patches["inference.translate"].call_count == 2
 
 
 def test_file_hash_consistent(tmp_path):
@@ -187,16 +165,11 @@ def test_ocr_cache_written_after_run(tmp_path):
 
     (input_dir / "page_001.jpg").write_bytes(b"fake image")
 
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-    }
-
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
     cache_path = tmp_path / "temp" / "page_001.jpg.ocr.json"
     assert cache_path.exists()
@@ -205,10 +178,12 @@ def test_ocr_cache_written_after_run(tmp_path):
     assert data["texts"] == ["Hello"]
     assert data["text_boxes"] == [[0, 0, 10, 10]]
     assert data["page_context"] == "Hello"
+    assert "spotting_raw" in data
+    assert "cluster_eps" in data
 
 
-def test_ocr_cache_hit_skips_ocr(tmp_path):
-    """detect_text, clean_page, extract_text are not called when a valid OCR cache exists."""
+def test_ocr_cache_hit_skips_spotting(tmp_path):
+    """spot_text is not called when a valid OCR cache with matching cluster_eps exists."""
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     temp_dir = tmp_path / "temp"
@@ -216,8 +191,6 @@ def test_ocr_cache_hit_skips_ocr(tmp_path):
 
     img_bytes = b"fake image"
     (input_dir / "page_001.jpg").write_bytes(img_bytes)
-
-    # Pre-populate the cleaned image so the cache hit condition is satisfied
     (temp_dir / "page_001.jpg").write_bytes(img_bytes)
 
     img_hash = hashlib.sha256(img_bytes).hexdigest()
@@ -226,23 +199,19 @@ def test_ocr_cache_hit_skips_ocr(tmp_path):
         "texts": ["cached text"],
         "text_boxes": [[0, 0, 5, 5]],
         "page_context": "cached text",
+        "spotting_raw": _FAKE_SPOTTING_RAW,
+        "cluster_eps": 80,
     }
     (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache))
-
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-    }
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
-    patches["inference.detect_text"].assert_not_called()
+    patches["inference.spot_text"].assert_not_called()
     patches["inference.clean_page"].assert_not_called()
-    patches["inference.extract_text"].assert_not_called()
     patches["inference.translate"].assert_called_once()
 
 
@@ -255,16 +224,11 @@ def test_cache_marked_translated_after_save(tmp_path):
 
     (input_dir / "page_001.jpg").write_bytes(b"fake image")
 
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-    }
-
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
     cache_path = tmp_path / "temp" / "page_001.jpg.ocr.json"
     data = json.loads(cache_path.read_text())
@@ -272,7 +236,7 @@ def test_cache_marked_translated_after_save(tmp_path):
 
 
 def test_ocr_cache_miss_on_hash_mismatch(tmp_path):
-    """OCR runs when cache exists but hash doesn't match (input image changed)."""
+    """spot_text runs when cache exists but hash doesn't match (input image changed)."""
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     temp_dir = tmp_path / "temp"
@@ -285,21 +249,18 @@ def test_ocr_cache_miss_on_hash_mismatch(tmp_path):
         "texts": ["old text"],
         "text_boxes": [],
         "page_context": "old text",
+        "spotting_raw": _FAKE_SPOTTING_RAW,
+        "cluster_eps": 80,
     }
     (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(stale_cache))
-
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-    }
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
          patch("torch.cuda.is_available", return_value=False), \
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
-        driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
+        driver(str(input_dir), str(temp_dir), str(output_dir), _BASE_CONFIG, "Japanese", "English")
 
-    patches["inference.extract_text"].assert_called_once()
+    patches["inference.spot_text"].assert_called_once()
 
 
 def test_memory_not_loaded_or_updated_when_memory_disabled(tmp_path):
@@ -311,11 +272,7 @@ def test_memory_not_loaded_or_updated_when_memory_disabled(tmp_path):
 
     (input_dir / "page_001.jpg").write_bytes(b"fake image")
 
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-        "memory_enabled": False,
-    }
+    config = {**_BASE_CONFIG, "memory_enabled": False}
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
@@ -336,11 +293,7 @@ def test_translate_called_with_use_json_false_when_json_disabled(tmp_path):
 
     (input_dir / "page_001.jpg").write_bytes(b"fake image")
 
-    config = {
-        "text_detection_model_path": "d", "ocr_model": "d",
-        "llm_name": "d", "font_path": "d", "image_enabled": False,
-        "json_enabled": False,
-    }
+    config = {**_BASE_CONFIG, "json_enabled": False}
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \

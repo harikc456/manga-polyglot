@@ -1,26 +1,20 @@
 import os
 import gc
-import cv2
 import json
 import torch
 import argparse
-import numpy as np
 import hashlib
 from PIL import Image
 from tqdm import tqdm
 from img_utils import (
-    imread,
     replace_text_with_translation,
     fill_bubble_with_estimated_color,
-    get_text_insertion_boxes,
+    sort_manga_reading_order,
 )
-from transformers import Sam3Processor, Sam3Model
-from transformers import RTDetrV2ForObjectDetection, RTDetrImageProcessor
 from transformers import AutoProcessor, AutoModelForImageTextToText
-from text_detection import detect_text
-
+from ocr_utils import parse_spotting_output, cluster_into_bubbles, boxes_from_clusters
 from text_utils import translate, update_session_memory
-from data_model import BubbleType, SessionMemory
+from data_model import SessionMemory
 from memory_utils import load_memory
 
 
@@ -32,128 +26,77 @@ def _file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def clean_text_blocks(img, mask):
-    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-    inpainted_telea = cv2.inpaint(img, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-    return inpainted_telea
+def spot_text(img_path: str, model, processor, max_tokens: int = 2048) -> str:
+    image = Image.open(img_path).convert("RGB")
+    orig_w, orig_h = image.size
+    if orig_w < 1500 and orig_h < 1500:
+        try:
+            resample = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample = Image.LANCZOS
+        image = image.resize((orig_w * 2, orig_h * 2), resample)
+    max_pixels = 2048 * 28 * 28
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": "Spotting:"},
+            ],
+        }
+    ]
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+        images_kwargs={
+            "size": {
+                "shortest_edge": processor.image_processor.min_pixels,
+                "longest_edge": max_pixels,
+            }
+        },
+    ).to(model.device)
+    outputs = model.generate(**inputs, max_new_tokens=max_tokens)
+    return processor.decode(outputs[0][inputs["input_ids"].shape[-1]:-1])
 
 
-def clean_bubble_free_text(pil_image, box, masked_block):
-    
-    numpy_image = np.array(pil_image)
-    img = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2BGR)
-
-    masked_block = masked_block.cpu().numpy()
-
-    masked_block = (masked_block * 255).astype(np.uint8)
-    
-    x1, y1, x2, y2 = list(map(int, box))
-    cropped_img = img[y1:y2, x1:x2]
-    cleaned_block = clean_text_blocks(cropped_img, masked_block)
-    filtered_block = cv2.medianBlur(cleaned_block, 25)
-    img[y1:y2, x1:x2] = filtered_block
-
-    color_converted_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(color_converted_image)
-    return pil_image
-
-def create_masks(pil_image, box: dict, segmentation_model, segmentation_processor):
-    box = box["original_text_box"]
-    box = list(map(int, box))
-
-    cropped_image = pil_image.crop(box)
-    inputs = segmentation_processor(images=cropped_image, text="manga dialogue letters", return_tensors="pt").to(segmentation_model.device)
-
-    with torch.no_grad():
-        outputs = segmentation_model(**inputs)
-
-    # Post-process results
-    results = segmentation_processor.post_process_instance_segmentation(
-        outputs,
-        threshold=0.5,
-        mask_threshold=0.5,
-        target_sizes=inputs.get("original_sizes").tolist()
-    )[0]
-
-    return results['masks']
-
-def clean_page(img_path: str, temp_dir: str, boxes: list[dict], segmentation_model, segmentation_processor):
+def clean_page(img_path: str, temp_dir: str, boxes: list[dict]) -> str:
     pil_image = Image.open(img_path).convert("RGB")
     file_name = os.path.basename(img_path)
     cleaned_file_path = os.path.join(temp_dir, file_name)
     for box in boxes:
-        if box["type"] == BubbleType.FIXED:
-            pil_image = fill_bubble_with_estimated_color(
-                pil_image, box["original_text_box"]
-            )
-        elif box["type"] == BubbleType.FREE:
-            masks = create_masks(pil_image, box, segmentation_model, segmentation_processor)
-            for mask in masks:
-                pil_image = clean_bubble_free_text(pil_image, box["original_text_box"], mask)
-
+        pil_image = fill_bubble_with_estimated_color(pil_image, box["insertion_polygon"])
     pil_image.save(cleaned_file_path)
     return cleaned_file_path
 
 
-def extract_text(img_path: str, boxes: list[dict], model, processor):
-    max_pixels = 1280 * 28 * 28
-    texts = []
-    text_boxes = []
+def _cluster_boxes(spotting_raw: str, img_path: str, cluster_eps: int) -> list[dict]:
     img = Image.open(img_path)
-    for box in boxes:
-        box = box["insertion_polygon"]
-        cropped_img = img.crop(box)
-        cropped_img = cropped_img.convert("L").convert("RGB")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": cropped_img},
-                    {"type": "text", "text": "OCR:"},
-                ],
-            }
-        ]
-
-        inputs = processor.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-            images_kwargs={
-                "size": {
-                    "shortest_edge": processor.image_processor.min_pixels,
-                    "longest_edge": max_pixels,
-                }
-            },
-        ).to(model.device)
-
-        outputs = model.generate(**inputs, max_new_tokens=256)
-        result = processor.decode(outputs[0][inputs["input_ids"].shape[-1] : -1])
-        texts.append(result)
-        text_boxes.append(box)
-    return texts, text_boxes
+    img_w, img_h = img.size
+    lines = parse_spotting_output(spotting_raw, img_w, img_h)
+    eps_pixels = int(cluster_eps / 1000 * max(img_w, img_h))
+    groups = cluster_into_bubbles(lines, eps=eps_pixels)
+    boxes = boxes_from_clusters(groups)
+    return sort_manga_reading_order(boxes)
 
 
 def driver(input_dir, temp_dir, output_dir, config, source_language, target_language):
     ocr_model_id = config["ocr_model"]
-    model_id = config["text_detection_model_path"]
     llm_name = config["llm_name"]
     font_path = config["font_path"]
     image_enabled = config.get("image_enabled", False)
     json_enabled = config.get("json_enabled", True)
     memory_enabled = config.get("memory_enabled", True)
+    cluster_eps = config.get("spotting_cluster_eps", 80)
+    max_tokens = config.get("spotting_max_tokens", 2048)
+
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir, exist_ok=True)
     memory_path = os.path.join(temp_dir, "memory.md")
     session_memory = load_memory(memory_path) if memory_enabled else None
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    segmentation_model = Sam3Model.from_pretrained("jetjodh/sam3").to(device)
-    segmentation_processor = Sam3Processor.from_pretrained("jetjodh/sam3")
-
-    image_processor = RTDetrImageProcessor.from_pretrained(model_id)
-    det_model = RTDetrV2ForObjectDetection.from_pretrained(model_id)
 
     ocr_model = (
         AutoModelForImageTextToText.from_pretrained(
@@ -166,40 +109,40 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
 
     img_paths = sorted(os.listdir(input_dir))
     computed = {}
+
     for img_name in tqdm(img_paths):
         img_path = os.path.join(input_dir, img_name)
         cache_path = os.path.join(temp_dir, img_name + ".ocr.json")
         current_hash = _file_hash(img_path)
+        clean_img_path = os.path.join(temp_dir, img_name)
+
+        spotting_raw = None
 
         if os.path.exists(cache_path):
             with open(cache_path) as f:
                 cached = json.load(f)
-            clean_img_path = os.path.join(temp_dir, img_name)
-            if cached.get("hash") == current_hash and os.path.exists(clean_img_path):
-                computed[img_path] = {
-                    "texts": cached["texts"],
-                    "text_boxes": cached["text_boxes"],
-                    "page_context": cached["page_context"],
-                    "clean_img_path": clean_img_path,
-                    "cache_path": cache_path,
-                    "hash": current_hash,
-                }
-                continue
+            if cached.get("hash") == current_hash:
+                if cached.get("cluster_eps") == cluster_eps and os.path.exists(clean_img_path):
+                    computed[img_path] = {
+                        "texts": cached["texts"],
+                        "text_boxes": cached["text_boxes"],
+                        "page_context": cached["page_context"],
+                        "clean_img_path": clean_img_path,
+                        "cache_path": cache_path,
+                        "hash": current_hash,
+                    }
+                    continue
+                if "spotting_raw" in cached:
+                    spotting_raw = cached["spotting_raw"]
 
-        results = detect_text(img_path, det_model, image_processor)
-        boxes = get_text_insertion_boxes(results, expand_ratio=0.65)
-        serialized_boxes = [
-            {
-                "original_text_box": b["original_text_box"],
-                "insertion_polygon": b["insertion_polygon"],
-                "confidence": b["confidence"],
-                "type": b["type"].value,
-            }
-            for b in boxes
-        ]
-        cleaned_file_path = clean_page(img_path, temp_dir, boxes, segmentation_model, segmentation_processor)
-        texts, text_boxes = extract_text(img_path, boxes, ocr_model, processor)
+        if spotting_raw is None:
+            spotting_raw = spot_text(img_path, ocr_model, processor, max_tokens)
+
+        boxes = _cluster_boxes(spotting_raw, img_path, cluster_eps)
+        texts = [b["text"] for b in boxes]
+        text_boxes = [b["insertion_polygon"] for b in boxes]
         page_context = "\n\n".join(texts)
+        cleaned_file_path = clean_page(img_path, temp_dir, boxes)
 
         computed[img_path] = {
             "texts": texts,
@@ -216,14 +159,11 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                 "texts": texts,
                 "text_boxes": [list(b) for b in text_boxes],
                 "page_context": page_context,
-                "boxes": serialized_boxes,
+                "spotting_raw": spotting_raw,
+                "cluster_eps": cluster_eps,
             }, f)
 
-    ## Removing models from GPU to make space for the LLM
-
     del ocr_model
-    del det_model
-    del segmentation_model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -234,7 +174,6 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     n_pages = len(img_paths)
 
     for i, img_name in enumerate(tqdm(img_paths)):
-
         img_path = os.path.join(input_dir, img_name)
         out_path = os.path.join(output_dir, img_name)
 
@@ -244,51 +183,34 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         if cache_data.get("hash") == computed[img_path]["hash"] and cache_data.get("translated"):
             continue
 
-        # Replace original text with the translated ones
-
         translations = []
         precomputed_vals = computed[img_path]
         cleaned_file_path = computed[img_path]["clean_img_path"]
 
-        # Build context: lookback + current (optional) + lookahead
         context_parts = []
-
-        # Lookback (previous pages)
         for j in range(max(0, i - lookback_pages), i):
             prev_img_path = os.path.join(input_dir, img_paths[j])
             ctx = computed[prev_img_path]["page_context"]
             if ctx:
                 context_parts.append(f"[Page {j+1}] {ctx}")
-
-        # Optionally include current page context (many teams exclude it)
         context_parts.append(f"[Current Page] {precomputed_vals['page_context']}")
-
-        # Lookahead (future pages)
         for j in range(i + 1, min(n_pages, i + 1 + lookahead_pages)):
             next_img_path = os.path.join(input_dir, img_paths[j])
             ctx = computed[next_img_path]["page_context"]
             if ctx:
                 context_parts.append(f"[Page {j+1} ahead] {ctx}")
-
         context = "\n\n".join(context_parts).strip()
 
-        for text, text_box in zip(
-            precomputed_vals["texts"], precomputed_vals["text_boxes"]
-        ):
-            # Optionally crop and pass image to the translation model
+        for text, text_box in zip(precomputed_vals["texts"], precomputed_vals["text_boxes"]):
             image = None
             if image_enabled:
                 img = Image.open(img_path)
                 image = img.crop(text_box)
 
-            # Build previous translations for consistency
-            previous_translations = []
-            if translations:
-                for prev in translations:
-                    previous_translations.append({
-                        "original": prev["original"],
-                        "translated": prev["translated"]
-                    })
+            previous_translations = [
+                {"original": p["original"], "translated": p["translated"]}
+                for p in translations
+            ]
 
             translated = translate(
                 text,
@@ -327,46 +249,17 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
 def main():
     parser = argparse.ArgumentParser(description="Inputs to translate")
     parser.add_argument("--input-dir", type=str, help="the directory containing images")
-
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        help="the directory to which translated images are stored",
-    )
-
-    parser.add_argument(
-        "--source-lang",
-        type=str,
-        help="the directory to which translated images are stored",
-        default="Japanese",
-    )
-
-    parser.add_argument(
-        "--target-lang",
-        type=str,
-        help="the directory to which translated images are stored",
-        default="English",
-    )
-
-    parser.add_argument(
-        "--temp-dir",
-        type=str,
-        help="the directory to which translated images are stored",
-        default="./temp",
-    )
-
+    parser.add_argument("--output-dir", type=str, help="the directory to which translated images are stored")
+    parser.add_argument("--source-lang", type=str, default="Japanese")
+    parser.add_argument("--target-lang", type=str, default="English")
+    parser.add_argument("--temp-dir", type=str, default="./temp")
     args = parser.parse_args()
+
     config_path = "./config.json"
     with open(config_path) as f:
         config = json.load(f)
 
-    input_dir = args.input_dir
-    output_dir = args.output_dir
-    temp_dir = args.temp_dir
-    source_language = args.source_lang
-    target_language = args.target_lang
-
-    driver(input_dir, temp_dir, output_dir, config, source_language, target_language)
+    driver(args.input_dir, args.temp_dir, args.output_dir, config, args.source_lang, args.target_lang)
 
 
 if __name__ == "__main__":
