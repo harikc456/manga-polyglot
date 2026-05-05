@@ -28,13 +28,6 @@ def _file_hash(path: str) -> str:
 
 def spot_text(img_path: str, model, processor, max_tokens: int = 2048) -> str:
     image = Image.open(img_path).convert("RGB")
-    orig_w, orig_h = image.size
-    if orig_w < 1500 and orig_h < 1500:
-        try:
-            resample = Image.Resampling.LANCZOS
-        except AttributeError:
-            resample = Image.LANCZOS
-        image = image.resize((orig_w * 2, orig_h * 2), resample)
     max_pixels = 2048 * 28 * 28
     messages = [
         {
