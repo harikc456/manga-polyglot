@@ -4,6 +4,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from collections import Counter
 
+def imread(imgpath, read_type=cv2.IMREAD_COLOR):
+    """Read an image from a file path (supports non-ASCII paths) using OpenCV."""
+    return cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
 
 def draw_wrapped_text(image, draw, polygon, text, font_path, font_scale=1.2):
     x_min, y_min, x_max, y_max = polygon
@@ -102,92 +105,46 @@ def intersection_over_union(boxA, boxB):
     return iou
 
 
-def match_text_to_bubbles(text_bubbles, bubbles, iou_thresh=0.15, dist_factor=1.8):
-    matches = {}  # text_idx → bubble_idx
+def sort_manga_reading_order(boxes):
+    """Sort insertion boxes in manga reading order: right-to-left columns, top-to-bottom within each column."""
+    if not boxes:
+        return boxes
 
-    for t_idx, t in enumerate(text_bubbles):
-        best_score = -1
-        best_b_idx = None
+    def get_poly(box):
+        return box["insertion_polygon"]
 
-        t_center = box_center(t["box"])
-        t_area = box_area(t["box"])
+    def cx(box):
+        x1, _, x2, _ = get_poly(box)
+        return (x1 + x2) / 2
 
-        for b_idx, b in enumerate(bubbles):
-            b_box = b["box"]
-            iou = intersection_over_union(t["box"], b_box)
+    def cy(box):
+        _, y1, _, y2 = get_poly(box)
+        return (y1 + y2) / 2
 
-            # center distance (normalized roughly by text size)
-            b_center = box_center(b_box)
-            dist = (
-                (t_center[0] - b_center[0]) ** 2 + (t_center[1] - b_center[1]) ** 2
-            ) ** 0.5
-            norm_dist = dist / (t_area**0.5 + 1)  # very rough scale normalization
+    widths = sorted(get_poly(b)[2] - get_poly(b)[0] for b in boxes)
+    tolerance = widths[len(widths) // 2]
 
-            # score: strong preference for high IoU, then close center
-            score = iou * 4.0 + (1.0 / (1.0 + norm_dist * 0.8))
+    sorted_boxes = sorted(boxes, key=lambda b: -cx(b))
 
-            if iou > iou_thresh and score > best_score:
-                best_score = score
-                best_b_idx = b_idx
+    columns = []
+    col_cx_vals = []
 
-        if best_b_idx is not None:
-            matches[t_idx] = best_b_idx
+    for box in sorted_boxes:
+        box_cx = cx(box)
+        assigned = False
+        for i, col_cx_val in enumerate(col_cx_vals):
+            if abs(box_cx - col_cx_val) <= tolerance:
+                columns[i].append(box)
+                assigned = True
+                break
+        if not assigned:
+            columns.append([box])
+            col_cx_vals.append(box_cx)
 
-    return matches
-
-
-def get_expanded_insertion_box(text_box, outer_box, expand_ratio=0.90):
-    """
-    expand_ratio:
-      0.0  = use original text_box
-      0.5  = exact halfway between text and outer
-      0.65 = more aggressive (common sweet spot)
-      1.0  = use full outer box (risky)
-    """
-    x1t, y1t, x2t, y2t = text_box
-    x1o, y1o, x2o, y2o = outer_box
-
-    # Linear interpolation
-    x1 = x1t + (x1o - x1t) * expand_ratio
-    y1 = y1t + (y1o - y1t) * expand_ratio
-    x2 = x2t + (x2o - x2t) * expand_ratio
-    y2 = y2t + (y2o - y2t) * expand_ratio
-
-    # Optional: add small inner safety margin (3–10 px)
-    margin = 5
-    x1 = max(x1, x1t + margin)
-    y1 = max(y1, y1t + margin)
-    x2 = min(x2, x2t - margin)
-    y2 = min(y2, y2t - margin)
-
-    return [int(round(v)) for v in [x1, y1, x2, y2]]
-
-
-def get_text_insertion_boxes(results, expand_ratio=0.90):
-    text_bubbles = results["text_bubbles"]
-    bubbles = results["bubbles"]
-    matches = match_text_to_bubbles(text_bubbles, bubbles)
-
-    insertion_boxes = []
-
-    for t_idx, t_item in enumerate(text_bubbles):
-        box = t_item["box"]  # default = tight box
-
-        if t_idx in matches:
-            b_idx = matches[t_idx]
-            outer = bubbles[b_idx]["box"]
-            box = get_expanded_insertion_box(t_item["box"], outer, expand_ratio)
-
-        insertion_boxes.append(
-            {
-                "original_text_box": t_item["box"],
-                "insertion_polygon": box,  # ← use this for drawing
-                "confidence": t_item["conf"],
-                "matched_outer": t_idx in matches,
-            }
-        )
-
-    return insertion_boxes
+    result = []
+    for col in columns:
+        result.extend(sorted(col, key=cy))
+    return result
 
 
 def add_discoloration(color, strength):

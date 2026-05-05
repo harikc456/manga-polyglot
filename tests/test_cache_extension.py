@@ -1,9 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock, mock_open
-
-import pytest
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -16,7 +14,7 @@ _MOCKS = {
     'PIL.Image': MagicMock(),
     'tqdm': MagicMock(),
     'img_utils': MagicMock(),
-    'text_detection': MagicMock(),
+    'ocr_utils': MagicMock(),
     'text_utils': MagicMock(),
     'data_model': MagicMock(),
     'memory_utils': MagicMock(),
@@ -28,24 +26,19 @@ with patch.dict(sys.modules, _MOCKS):
 sys.modules['inference'] = inference
 
 
-def test_cache_write_includes_boxes(tmp_path):
-    """When a page is processed for the first time, the cache must include a 'boxes' key."""
-    fake_box = {
-        "original_text_box": [10, 10, 50, 30],
-        "insertion_polygon": [8, 8, 52, 32],
-        "confidence": 0.94,
-        "type": MagicMock(value="fixed"),
+def test_cache_write_includes_spotting_raw_and_cluster_eps():
+    """First-pass cache must include spotting_raw and cluster_eps."""
+    cache_data = {
+        "hash": "abc123",
+        "texts": ["FROM MY TEACHER"],
+        "text_boxes": [[498, 80, 583, 111]],
+        "page_context": "FROM MY TEACHER",
+        "spotting_raw": "FROM MY<|LOC_498|><|LOC_80|><|LOC_580|><|LOC_80|><|LOC_580|><|LOC_93|><|LOC_498|><|LOC_93|>",
+        "cluster_eps": 80,
     }
-
-    serialized = {
-        "original_text_box": fake_box["original_text_box"],
-        "insertion_polygon": fake_box["insertion_polygon"],
-        "confidence": fake_box["confidence"],
-        "type": fake_box["type"].value,
-    }
-    assert serialized["type"] == "fixed"
-    assert serialized["confidence"] == 0.94
-    assert len(serialized["original_text_box"]) == 4
+    assert "spotting_raw" in cache_data
+    assert "cluster_eps" in cache_data
+    assert cache_data["cluster_eps"] == 80
 
 
 def test_cache_write_includes_translations(tmp_path):

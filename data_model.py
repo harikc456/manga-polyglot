@@ -1,4 +1,3 @@
-from enum import Enum
 from typing import Literal
 from pydantic import BaseModel, field_validator
 
@@ -6,10 +5,6 @@ from pydantic import BaseModel, field_validator
 class Translation(BaseModel):
     input_text: str
     translated_text: str
-
-class BubbleType(str, Enum):
-    FREE = "free"
-    FIXED = "fixed"
 
 
 class EntityEntry(BaseModel):
