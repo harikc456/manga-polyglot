@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Manga Translation Reviewer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>Manga Translation Reviewer</h1>
+  <span class="path" id="path-label"></span>
+  <div class="stats">
+    <div class="stat"><div class="dot dot-approved"></div><span id="count-approved">0 approved</span></div>
+    <div class="stat"><div class="dot dot-flagged"></div><span id="count-flagged">0 flagged</span></div>
+    <div class="stat"><div class="dot dot-unseen"></div><span id="count-unseen">0 unseen</span></div>
+    <button class="btn-export" onclick="exportLog()">&#8595; Export review_log.json</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-header">Pages (<span id="page-count">0</span>)</div>
+    <div id="page-list"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2 id="panel-title">Select a page</h2>
+      <span class="badge" id="bubble-badge" style="display:none"></span>
+      <span class="badge" id="status-badge" style="display:none"></span>
+      <div class="panel-nav">
+        <button class="nav-btn" id="btn-prev" onclick="navigate(-1)" disabled>&#8592; Prev</button>
+        <button class="nav-btn" id="btn-next" onclick="navigate(1)" disabled>Next &#8594;</button>
+      </div>
+    </div>
+
+    <div class="stages" id="stages" style="display:none">
+      <div class="stage stage-1">
+        <div class="stage-header">
+          <div class="stage-num">1</div>
+          Detection
+          <span class="stage-sub">RT-DETR + box expansion</span>
+        </div>
+        <div class="stage-img"><img id="img-detection" src="" alt="detection"></div>
+        <div class="stage-meta" id="meta-detection">—</div>
+      </div>
+
+      <div class="stage stage-2">
+        <div class="stage-header">
+          <div class="stage-num">2</div>
+          Cleaning
+          <span class="stage-sub">SAM3 + TELEA inpaint</span>
+        </div>
+        <div class="stage-img"><img id="img-cleaned" src="" alt="cleaned"></div>
+        <div class="stage-meta" id="meta-cleaning">—</div>
+      </div>
+
+      <div class="stage stage-3">
+        <div class="stage-header">
+          <div class="stage-num">3</div>
+          Translation
+          <span class="stage-sub" id="llm-label"></span>
+        </div>
+        <div class="stage-img"><img id="img-output" src="" alt="output"></div>
+        <div class="stage-meta" id="meta-translation">—</div>
+      </div>
+    </div>
+
+    <div class="empty-state" id="empty-state">Select a page from the sidebar to review it.</div>
+
+    <div class="bottom-bar" id="bottom-bar" style="display:none">
+      <div class="notes-area">
+        <div class="notes-label">Notes / Shortcomings</div>
+        <textarea class="notes-input" id="notes" placeholder="e.g. 'sfx bubble not fully cleaned' · 'detection missed top-left bubble' · 'translation too formal'"></textarea>
+      </div>
+      <div class="action-btns">
+        <button class="btn btn-approve" onclick="saveReview('approved')">&#10003; Approve</button>
+        <button class="btn btn-flag" onclick="saveReview('flagged')">&#9873; Flag page</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
