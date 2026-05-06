@@ -4,6 +4,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from unittest.mock import patch, MagicMock
 import pytest
+import numpy as np
 
 
 def test_ensure_model_returns_correct_path():
@@ -38,3 +39,39 @@ def test_ensure_model_downloads_when_missing(tmp_path):
         mock_dl.assert_called_once()
         assert mock_dl.call_args[0][0] == MODEL_URL
         assert result == fake_model
+
+
+def test_build_text_mask_shape():
+    """build_text_mask returns a uint8 mask of the correct image dimensions."""
+    from inpainting import build_text_mask
+    boxes = [{"insertion_polygon": [10, 10, 50, 50]}]
+    mask = build_text_mask(boxes, img_w=100, img_h=80)
+    assert mask.shape == (80, 100)
+    assert mask.dtype == np.uint8
+
+
+def test_build_text_mask_covers_box():
+    """Mask has 255 inside the box region before dilation."""
+    from inpainting import build_text_mask
+    # Use a box far from edges so dilation doesn't complicate this check
+    boxes = [{"insertion_polygon": [40, 40, 60, 60]}]
+    mask = build_text_mask(boxes, img_w=200, img_h=200)
+    # Centre of box must be white
+    assert mask[50, 50] == 255
+
+
+def test_build_text_mask_is_dilated():
+    """Mask extends beyond the original box due to morphological dilation."""
+    from inpainting import build_text_mask
+    boxes = [{"insertion_polygon": [50, 50, 100, 100]}]
+    mask = build_text_mask(boxes, img_w=300, img_h=300)
+    # A pixel just outside the box should be white (dilated)
+    assert mask[48, 75] == 255  # 2 pixels above top edge
+    assert mask[75, 48] == 255  # 2 pixels left of left edge
+
+
+def test_build_text_mask_empty_boxes():
+    """build_text_mask with no boxes returns an all-zero mask."""
+    from inpainting import build_text_mask
+    mask = build_text_mask([], img_w=100, img_h=100)
+    assert mask.max() == 0
