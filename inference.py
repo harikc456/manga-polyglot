@@ -16,10 +16,7 @@ from ocr_utils import parse_spotting_output, cluster_into_bubbles, boxes_from_cl
 from text_utils import translate, update_session_memory
 from data_model import SessionMemory
 from memory_utils import load_memory
-try:
-    from inpainting import inpaint_page
-except ImportError:
-    inpaint_page = None  # type: ignore[assignment]
+from inpainting import inpaint_page
 
 
 def _file_hash(path: str) -> str:
