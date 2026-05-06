@@ -16,6 +16,7 @@ from ocr_utils import parse_spotting_output, cluster_into_bubbles, boxes_from_cl
 from text_utils import translate, update_session_memory
 from data_model import SessionMemory
 from memory_utils import load_memory
+from inpainting import inpaint_page
 
 
 def _file_hash(path: str) -> str:
@@ -55,12 +56,21 @@ def spot_text(img_path: str, model, processor, max_tokens: int = 512) -> str:
     return processor.decode(outputs[0][inputs["input_ids"].shape[-1]:-1])
 
 
-def clean_page(img_path: str, temp_dir: str, boxes: list[dict]) -> str:
+def clean_page(img_path: str, temp_dir: str, boxes: list[dict], inpainting_engine: str = "color_fill") -> str:
     pil_image = Image.open(img_path).convert("RGB")
     file_name = os.path.basename(img_path)
     cleaned_file_path = os.path.join(temp_dir, file_name)
-    for box in boxes:
-        pil_image = fill_bubble_with_estimated_color(pil_image, box["insertion_polygon"])
+
+    if inpainting_engine == "color_fill":
+        for box in boxes:
+            pil_image = fill_bubble_with_estimated_color(pil_image, box["insertion_polygon"])
+    elif inpainting_engine == "lama":
+        pil_image = inpaint_page(pil_image, boxes)
+    else:
+        raise ValueError(
+            f"Invalid inpainting_engine '{inpainting_engine}'. Valid options: 'color_fill', 'lama'"
+        )
+
     pil_image.save(cleaned_file_path)
     return cleaned_file_path
 
@@ -85,6 +95,11 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     cluster_eps = config.get("spotting_cluster_eps", 80)
     max_tokens = config.get("spotting_max_tokens", 512)
     # Dense pages (many sound effects/narration boxes) can approach this limit; raise in config.json if spotting looks incomplete.
+    inpainting_engine = config.get("inpainting_engine", "color_fill")
+    if inpainting_engine not in ("color_fill", "lama"):
+        raise ValueError(
+            f"Invalid inpainting_engine '{inpainting_engine}'. Valid options: 'color_fill', 'lama'"
+        )
 
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir, exist_ok=True)
@@ -136,7 +151,7 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         texts = [b["text"] for b in boxes]
         text_boxes = [b["insertion_polygon"] for b in boxes]
         page_context = "\n\n".join(texts)
-        cleaned_file_path = clean_page(img_path, temp_dir, boxes)
+        cleaned_file_path = clean_page(img_path, temp_dir, boxes, inpainting_engine)
 
         computed[img_path] = {
             "texts": texts,
