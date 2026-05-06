@@ -3,6 +3,7 @@ import urllib.request
 from tqdm import tqdm
 import cv2
 import numpy as np
+import onnxruntime as ort
 
 MODEL_URL = "https://huggingface.co/mayocream/lama-manga-onnx/resolve/main/lama-manga.onnx"
 MODEL_PATH = Path.home() / ".manga-polyglot" / "models" / "lama-manga.onnx"
@@ -32,3 +33,25 @@ def build_text_mask(boxes: list[dict], img_w: int, img_h: int) -> np.ndarray:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     mask = cv2.dilate(mask, kernel, iterations=2)
     return mask
+
+
+class LamaInpainter:
+    def __init__(self, model_path: Path):
+        providers = ["CPUExecutionProvider"]
+        try:
+            if "CUDAExecutionProvider" in ort.get_available_providers():
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        except Exception:
+            pass
+        self._session = ort.InferenceSession(str(model_path), providers=providers)
+
+    def infer(self, img_rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        img = img_rgb.astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))[np.newaxis]       # [1, 3, H, W]
+        msk = (mask.astype(np.float32) / 255.0)[np.newaxis, np.newaxis]  # [1, 1, H, W]
+
+        inputs = self._session.get_inputs()
+        feeds = {inputs[0].name: img, inputs[1].name: msk}
+        output = self._session.run(None, feeds)[0]            # [1, 3, H, W]
+        result = np.clip(output[0].transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
+        return result

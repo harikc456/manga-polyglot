@@ -75,3 +75,47 @@ def test_build_text_mask_empty_boxes():
     from inpainting import build_text_mask
     mask = build_text_mask([], img_w=100, img_h=100)
     assert mask.max() == 0
+
+
+def _make_fake_ort_session(output_shape):
+    """Return a mock onnxruntime.InferenceSession that outputs a fixed array."""
+    session = MagicMock()
+    fake_input_0 = MagicMock()
+    fake_input_0.name = "image"
+    fake_input_1 = MagicMock()
+    fake_input_1.name = "mask"
+    session.get_inputs.return_value = [fake_input_0, fake_input_1]
+    # output[0] shape: [1, 3, H, W] — normalized float32
+    h, w = output_shape
+    session.run.return_value = [np.ones((1, 3, h, w), dtype=np.float32) * 0.5]
+    return session
+
+
+def test_lama_inpainter_infer_output_shape(tmp_path):
+    """LamaInpainter.infer() returns an array with the same HxW as the input."""
+    fake_model = tmp_path / "lama-manga.onnx"
+    fake_model.write_bytes(b"fake")
+
+    with patch("onnxruntime.InferenceSession", return_value=_make_fake_ort_session((64, 64))):
+        from inpainting import LamaInpainter
+        inpainter = LamaInpainter(fake_model)
+        img = np.zeros((64, 64, 3), dtype=np.uint8)
+        mask = np.zeros((64, 64), dtype=np.uint8)
+        result = inpainter.infer(img, mask)
+        assert result.shape == (64, 64, 3)
+
+
+def test_lama_inpainter_infer_output_dtype(tmp_path):
+    """LamaInpainter.infer() returns uint8 values in [0, 255]."""
+    fake_model = tmp_path / "lama-manga.onnx"
+    fake_model.write_bytes(b"fake")
+
+    with patch("onnxruntime.InferenceSession", return_value=_make_fake_ort_session((32, 32))):
+        from inpainting import LamaInpainter
+        inpainter = LamaInpainter(fake_model)
+        img = np.full((32, 32, 3), 128, dtype=np.uint8)
+        mask = np.zeros((32, 32), dtype=np.uint8)
+        result = inpainter.infer(img, mask)
+        assert result.dtype == np.uint8
+        assert result.min() >= 0
+        assert result.max() <= 255
