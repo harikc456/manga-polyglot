@@ -6,5 +6,6 @@
     "json_enabled": false,
     "memory_enabled": false,
     "spotting_cluster_eps": 80,
-    "spotting_max_tokens": 512
+    "spotting_max_tokens": 512,
+    "inpainting_engine": "color_fill"
 }

@@ -15,6 +15,9 @@ dependencies = [
     "httpx",
     "numpy",
     "scikit-learn",
+    "jaconv",
+    "ollama",
+    "onnxruntime",
 ]
 
 [project.optional-dependencies]
