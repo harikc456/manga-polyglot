@@ -119,3 +119,59 @@ def test_lama_inpainter_infer_output_dtype(tmp_path):
         assert result.dtype == np.uint8
         assert result.min() >= 0
         assert result.max() <= 255
+
+
+from PIL import Image as PILImage
+
+
+def _fake_inpainter_passthrough(img_rgb, mask):
+    """Identity inpainter — returns the tile unchanged."""
+    return img_rgb.copy()
+
+
+def test_inpaint_page_returns_pil_image(tmp_path):
+    """inpaint_page() returns a PIL Image of the same size as the input."""
+    img = PILImage.fromarray(np.ones((200, 200, 3), dtype=np.uint8) * 200)
+    boxes = [{"insertion_polygon": [50, 50, 150, 150]}]
+    fake_model = tmp_path / "lama-manga.onnx"
+    fake_model.write_bytes(b"fake")
+
+    with patch("inpainting.ensure_model", return_value=fake_model), \
+         patch("inpainting.LamaInpainter") as MockInpainter:
+        MockInpainter.return_value.infer.side_effect = _fake_inpainter_passthrough
+        from inpainting import inpaint_page
+        result = inpaint_page(img, boxes)
+        assert isinstance(result, PILImage.Image)
+        assert result.size == img.size
+
+
+def test_inpaint_page_processes_text_regions(tmp_path):
+    """inpaint_page() calls LamaInpainter.infer() at least once when boxes exist."""
+    img = PILImage.fromarray(np.ones((200, 200, 3), dtype=np.uint8) * 200)
+    boxes = [{"insertion_polygon": [50, 50, 150, 150]}]
+    fake_model = tmp_path / "lama-manga.onnx"
+    fake_model.write_bytes(b"fake")
+
+    with patch("inpainting.ensure_model", return_value=fake_model), \
+         patch("inpainting.LamaInpainter") as MockInpainter:
+        mock_inpainter = MockInpainter.return_value
+        mock_inpainter.infer.side_effect = _fake_inpainter_passthrough
+        from inpainting import inpaint_page
+        inpaint_page(img, boxes)
+        assert mock_inpainter.infer.call_count >= 1
+
+
+def test_inpaint_page_no_boxes_returns_unchanged(tmp_path):
+    """inpaint_page() with empty boxes returns image without calling infer."""
+    arr = np.ones((100, 100, 3), dtype=np.uint8) * 128
+    img = PILImage.fromarray(arr)
+    fake_model = tmp_path / "lama-manga.onnx"
+    fake_model.write_bytes(b"fake")
+
+    with patch("inpainting.ensure_model", return_value=fake_model), \
+         patch("inpainting.LamaInpainter") as MockInpainter:
+        mock_inpainter = MockInpainter.return_value
+        from inpainting import inpaint_page
+        result = inpaint_page(img, [])
+        mock_inpainter.infer.assert_not_called()
+        assert np.array_equal(np.array(result), arr)

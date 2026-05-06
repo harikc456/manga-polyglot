@@ -55,3 +55,66 @@ class LamaInpainter:
         output = self._session.run(None, feeds)[0]            # [1, 3, H, W]
         result = np.clip(output[0].transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
         return result
+
+
+from PIL import Image
+
+
+def inpaint_page(pil_image: Image.Image, boxes: list[dict]) -> Image.Image:
+    model_path = ensure_model()
+    img_w, img_h = pil_image.size
+
+    img_rgb = np.array(pil_image)
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    output = img_bgr.copy()
+
+    mask = build_text_mask(boxes, img_w, img_h)
+
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        mask, connectivity=8
+    )
+
+    blobs = []
+    for lbl in range(1, num_labels):
+        area = stats[lbl, cv2.CC_STAT_AREA]
+        if area >= 5:
+            blobs.append((area, lbl, stats[lbl], centroids[lbl]))
+    blobs.sort(key=lambda x: x[0], reverse=True)
+
+    if not blobs:
+        return pil_image
+
+    inpainter = LamaInpainter(model_path)
+    processed_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+
+    for area, lbl, stat, centroid in blobs:
+        cx, cy = int(centroid[0]), int(centroid[1])
+        if processed_mask[cy, cx] > 0:
+            continue
+
+        pad = 32
+        x1 = max(0, stat[cv2.CC_STAT_LEFT] - pad)
+        y1 = max(0, stat[cv2.CC_STAT_TOP] - pad)
+        x2 = min(img_w, stat[cv2.CC_STAT_LEFT] + stat[cv2.CC_STAT_WIDTH] + pad)
+        y2 = min(img_h, stat[cv2.CC_STAT_TOP] + stat[cv2.CC_STAT_HEIGHT] + pad)
+
+        tile_bgr = img_bgr[y1:y2, x1:x2]
+        mask_tile = mask[y1:y2, x1:x2]
+        tile_rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
+
+        h, w = tile_rgb.shape[:2]
+        pad_h = (8 - h % 8) % 8
+        pad_w = (8 - w % 8) % 8
+        tile_padded = cv2.copyMakeBorder(tile_rgb, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+        mask_padded = cv2.copyMakeBorder(mask_tile, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+
+        result_padded = inpainter.infer(tile_padded, mask_padded)
+        result_rgb = result_padded[:h, :w]
+        result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+
+        region_mask = mask[y1:y2, x1:x2]
+        output[y1:y2, x1:x2][region_mask > 0] = result_bgr[region_mask > 0]
+        processed_mask[y1:y2, x1:x2][region_mask > 0] = 255
+
+    result_rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(result_rgb)
