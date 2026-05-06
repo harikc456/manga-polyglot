@@ -47,15 +47,21 @@ class LamaInpainter:
         self._session = ort.InferenceSession(str(model_path), providers=providers)
 
     def infer(self, img_rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        img = img_rgb.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))[np.newaxis]       # [1, 3, H, W]
-        msk = (mask.astype(np.float32) / 255.0)[np.newaxis, np.newaxis]  # [1, 1, H, W]
+        orig_h, orig_w = img_rgb.shape[:2]
+
+        img_512 = cv2.resize(img_rgb, (512, 512), interpolation=cv2.INTER_LINEAR)
+        msk_512 = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
+
+        img = img_512.astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))[np.newaxis]          # [1, 3, 512, 512]
+        msk = (msk_512.astype(np.float32) / 255.0)[np.newaxis, np.newaxis]  # [1, 1, 512, 512]
 
         inputs = self._session.get_inputs()
         feeds = {inputs[0].name: img, inputs[1].name: msk}
-        output = self._session.run(None, feeds)[0]            # [1, 3, H, W]
-        result = np.clip(output[0].transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
-        return result
+        output = self._session.run(None, feeds)[0]               # [1, 3, 512, 512]
+        result_512 = np.clip(output[0].transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
+
+        return cv2.resize(result_512, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
 
 
 def inpaint_page(pil_image: Image.Image, boxes: list[dict]) -> Image.Image:
@@ -100,14 +106,7 @@ def inpaint_page(pil_image: Image.Image, boxes: list[dict]) -> Image.Image:
         mask_tile = mask[y1:y2, x1:x2]
         tile_rgb = cv2.cvtColor(tile_bgr, cv2.COLOR_BGR2RGB)
 
-        h, w = tile_rgb.shape[:2]
-        pad_h = (8 - h % 8) % 8
-        pad_w = (8 - w % 8) % 8
-        tile_padded = cv2.copyMakeBorder(tile_rgb, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
-        mask_padded = cv2.copyMakeBorder(mask_tile, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
-
-        result_padded = inpainter.infer(tile_padded, mask_padded)
-        result_rgb = result_padded[:h, :w]
+        result_rgb = inpainter.infer(tile_rgb, mask_tile)
         result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
 
         region_mask = mask[y1:y2, x1:x2]
