@@ -1,6 +1,7 @@
 from pathlib import Path
 import urllib.request
 from tqdm import tqdm
+from PIL import Image
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -55,9 +56,6 @@ class LamaInpainter:
         output = self._session.run(None, feeds)[0]            # [1, 3, H, W]
         result = np.clip(output[0].transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
         return result
-
-
-from PIL import Image
 
 
 def inpaint_page(pil_image: Image.Image, boxes: list[dict]) -> Image.Image:

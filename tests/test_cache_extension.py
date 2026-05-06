@@ -18,6 +18,8 @@ _MOCKS = {
     'text_utils': MagicMock(),
     'data_model': MagicMock(),
     'memory_utils': MagicMock(),
+    'onnxruntime': MagicMock(),
+    'inpainting': MagicMock(),
 }
 
 with patch.dict(sys.modules, _MOCKS):
