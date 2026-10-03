@@ -58,7 +58,7 @@ async function loadPage(idx) {
   // Header
   document.getElementById('panel-title').textContent = page.name;
 
-  const bubbleCount = (currentPageData.boxes || []).length;
+  const bubbleCount = (currentPageData.text_boxes || []).length;
   const bubbleBadge = document.getElementById('bubble-badge');
   bubbleBadge.textContent = `${bubbleCount} bubble${bubbleCount !== 1 ? 's' : ''} detected`;
   bubbleBadge.style.display = '';
@@ -76,10 +76,8 @@ async function loadPage(idx) {
   document.getElementById('img-output').src    = `/image/output/${page.name}?t=${ts}`;
 
   // Detection meta
-  const fixed = (currentPageData.boxes || []).filter(b => b.type === 'fixed').length;
-  const free  = (currentPageData.boxes || []).filter(b => b.type === 'free').length;
   document.getElementById('meta-detection').textContent =
-    `${bubbleCount} boxes — ${fixed} FIXED, ${free} FREE`;
+    `${bubbleCount} box${bubbleCount !== 1 ? 'es' : ''}, numbered in reading order`;
 
   // Cleaning meta
   document.getElementById('meta-cleaning').textContent =

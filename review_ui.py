@@ -77,12 +77,10 @@ def create_app(input_dir: Path, temp_dir: Path, output_dir: Path) -> FastAPI:
         cache = _read_cache(name)
         img = Image.open(orig_path).convert("RGB")
         draw = ImageDraw.Draw(img)
-        for box in cache.get("boxes", []):
-            color = "red" if box.get("type") == "fixed" else "orange"
-            x1, y1, x2, y2 = box["original_text_box"]
-            draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
-            conf = box.get("confidence", 0)
-            draw.text((x1, max(0, y1 - 12)), f"{conf:.2f}", fill=color)
+        # text_boxes are in reading order, so the label is the order the bubbles are translated in
+        for i, (x1, y1, x2, y2) in enumerate(cache.get("text_boxes", []), 1):
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
+            draw.text((x1, max(0, y1 - 12)), str(i), fill="red")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(content=buf.getvalue(), media_type="image/png")
@@ -94,7 +92,6 @@ def create_app(input_dir: Path, temp_dir: Path, output_dir: Path) -> FastAPI:
             "name": name,
             "texts": cache.get("texts", []),
             "text_boxes": cache.get("text_boxes", []),
-            "boxes": cache.get("boxes", []),
             "translations": cache.get("translations", []),
             "translated": cache.get("translated", False),
             "review": review_log.get(name, {"status": "unseen", "notes": "", "timestamp": None}),

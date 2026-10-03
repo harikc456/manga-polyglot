@@ -89,8 +89,9 @@ def test_detect_recognize_applies_and_clamps_crop_padding(tmp_path):
     rec = FakeRecognizer()
     pipe = DetectRecognize(FakeDetector([_box(5, 5, 20, 20)]), rec, NONE, crop_padding=10)
     result = pipe.run(_page(tmp_path, size=(100, 100)))
-    assert result[0]["insertion_polygon"] == [0, 0, 30, 30]
     assert rec.crops == [(30, 30)]
+    # padding is only for the recognizer's crop; the polygon is the detected box, as in Spot
+    assert result[0]["insertion_polygon"] == [5, 5, 20, 20]
 
 
 def test_detect_recognize_groups_nearby_boxes_with_dbscan(tmp_path):

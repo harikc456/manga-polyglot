@@ -22,20 +22,14 @@ def dirs(tmp_path):
     img = Image.new("RGB", (100, 150), color=(240, 240, 240))
     img.save(str(input_dir / "001.jpg"))
 
-    # OCR cache
+    # OCR cache, in the format inference.py writes
     cache = {
         "hash": "abc123",
         "texts": ["こんにちは"],
         "text_boxes": [[10, 10, 50, 30]],
         "page_context": "こんにちは",
-        "boxes": [
-            {
-                "original_text_box": [10, 10, 50, 30],
-                "insertion_polygon": [8, 8, 52, 32],
-                "confidence": 0.94,
-                "type": "fixed",
-            }
-        ],
+        "ocr": {"pipeline": "spot", "spotter": {"name": "paddleocr_vl"}},
+        "ocr_boxes": [{"text": "こんにちは", "insertion_polygon": [10, 10, 50, 30]}],
         "translations": [{"original": "こんにちは", "translated": "Hello!"}],
         "translated": True,
     }
@@ -106,6 +100,15 @@ def test_image_detection(client):
     assert resp.headers["content-type"] == "image/png"
 
 
+def test_image_detection_draws_text_boxes(client):
+    import io
+
+    resp = client.get("/image/detection/001.jpg")
+    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+    r, g, b = img.getpixel((30, 10))  # top edge of the text box
+    assert r > 200 and g < 80 and b < 80
+
+
 def test_image_missing_returns_404(client):
     resp = client.get("/image/original/missing.jpg")
     assert resp.status_code == 404
@@ -117,8 +120,7 @@ def test_page_detail(client):
     data = resp.json()
     assert data["name"] == "001.jpg"
     assert data["texts"] == ["こんにちは"]
-    assert len(data["boxes"]) == 1
-    assert data["boxes"][0]["confidence"] == 0.94
+    assert data["text_boxes"] == [[10, 10, 50, 30]]
     assert data["translations"] == [{"original": "こんにちは", "translated": "Hello!"}]
     assert data["review"]["status"] == "unseen"
 

@@ -25,13 +25,16 @@ class DetectRecognize(Pipeline):
         result = []
         for group in self._grouper(boxes, img_w, img_h):
             x0, y0, x1, y1 = union_box(group)
-            x0 = max(0, x0 - self._crop_padding)
-            y0 = max(0, y0 - self._crop_padding)
-            x1 = min(img_w, x1 + self._crop_padding)
-            y1 = min(img_h, y1 + self._crop_padding)
             if x1 <= x0 or y1 <= y0:
                 continue
-            text = self._recognizer.read(image.crop((x0, y0, x1, y1)))
+            # Padding gives the recognizer some context; the polygon stays the detected box (as in Spot).
+            crop = (
+                max(0, x0 - self._crop_padding),
+                max(0, y0 - self._crop_padding),
+                min(img_w, x1 + self._crop_padding),
+                min(img_h, y1 + self._crop_padding),
+            )
+            text = self._recognizer.read(image.crop(crop))
             result.append({"text": text, "insertion_polygon": [x0, y0, x1, y1]})
         return result
 

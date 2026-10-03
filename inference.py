@@ -25,6 +25,18 @@ def _file_hash(path: str) -> str:
     return h.hexdigest()
 
 
+def _translation_settings(config: dict, source_language: str, target_language: str) -> dict:
+    """Everything that changes the translations; a cached translation is reused only if these match."""
+    return {
+        "llm_name": config["llm_name"],
+        "source_language": source_language,
+        "target_language": target_language,
+        "image_enabled": config.get("image_enabled", False),
+        "json_enabled": config.get("json_enabled", True),
+        "memory_enabled": config.get("memory_enabled", True),
+    }
+
+
 def clean_page(img_path: str, temp_dir: str, boxes: list[dict]) -> str:
     pil_image = Image.open(img_path).convert("RGB")
     file_name = os.path.basename(img_path)
@@ -42,9 +54,10 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     json_enabled = config.get("json_enabled", True)
     memory_enabled = config.get("memory_enabled", True)
     ocr_config = config.get("ocr")
+    translation_settings = _translation_settings(config, source_language, target_language)
 
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     memory_path = os.path.join(temp_dir, "memory.md")
     session_memory = load_memory(memory_path) if memory_enabled else None
 
@@ -128,12 +141,24 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         cache_path = computed[img_path]["cache_path"]
         with open(cache_path) as f:
             cache_data = json.load(f)
-        if cache_data.get("hash") == computed[img_path]["hash"] and cache_data.get("translated"):
+        precomputed_vals = computed[img_path]
+        cleaned_file_path = computed[img_path]["clean_img_path"]
+
+        if (
+            cache_data.get("hash") == computed[img_path]["hash"]
+            and cache_data.get("translated")
+            and cache_data.get("translation_settings") == translation_settings
+        ):
+            if not os.path.exists(out_path):
+                # Translations are still valid; only the rendered page is missing.
+                cached = [
+                    {**t, "polygon": box}
+                    for t, box in zip(cache_data.get("translations", []), precomputed_vals["text_boxes"])
+                ]
+                replace_text_with_translation(cleaned_file_path, font_path, cached).save(out_path)
             continue
 
         translations = []
-        precomputed_vals = computed[img_path]
-        cleaned_file_path = computed[img_path]["clean_img_path"]
 
         context_parts = []
         for j in range(max(0, i - lookback_pages), i):
@@ -186,6 +211,7 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         translated_image.save(out_path)
 
         cache_data["translated"] = True
+        cache_data["translation_settings"] = translation_settings
         cache_data["translations"] = [
             {"original": t["original"], "translated": t["translated"]}
             for t in translations

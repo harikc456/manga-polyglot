@@ -99,14 +99,14 @@ def format_memory_for_prompt(memory: SessionMemory) -> str:
         parts.append("Known entities (use these translations consistently):")
         if memory.characters:
             char_list = ", ".join(
-                f"{c.translated_name} ({c.gender}{', ' + c.notes if c.notes else ''})"
+                f"{c.original_name} → {c.translated_name} ({c.gender}{', ' + c.notes if c.notes else ''})"
                 for c in memory.characters
             )
             parts.append(f"- Characters: {char_list}")
         if memory.places:
-            parts.append(f"- Places: {', '.join(p.translated for p in memory.places)}")
+            parts.append(f"- Places: {', '.join(f'{p.original} → {p.translated}' for p in memory.places)}")
         if memory.organizations:
-            parts.append(f"- Organizations: {', '.join(o.translated for o in memory.organizations)}")
+            parts.append(f"- Organizations: {', '.join(f'{o.original} → {o.translated}' for o in memory.organizations)}")
 
     if memory.story_summary:
         if parts:

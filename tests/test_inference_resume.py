@@ -74,6 +74,38 @@ _BASE_CONFIG = {
 }
 
 
+def _settings(config=_BASE_CONFIG, source="Japanese", target="English"):
+    return inference._translation_settings(config, source, target)
+
+
+def _run(input_dir, temp_dir, output_dir, config=_BASE_CONFIG, source="Japanese", target="English"):
+    patches = _make_driver_deps()
+    with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
+         patch("torch.cuda.is_available", return_value=False), \
+         patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
+        driver(str(input_dir), str(temp_dir), str(output_dir), config, source, target)
+    return patches
+
+
+def _translated_page(tmp_path, output_exists=True, **settings_kwargs):
+    """One page whose OCR, cleaning and translation are all cached."""
+    input_dir, temp_dir, output_dir = tmp_path / "input", tmp_path / "temp", tmp_path / "output"
+    input_dir.mkdir(); temp_dir.mkdir(); output_dir.mkdir()
+    img_bytes = b"fake image"
+    (input_dir / "page_001.jpg").write_bytes(img_bytes)
+    (temp_dir / "page_001.jpg").write_bytes(b"cleaned")
+    if output_exists:
+        (output_dir / "page_001.jpg").write_bytes(b"translated")
+    cache = _cache(
+        hashlib.sha256(img_bytes).hexdigest(),
+        translated=True,
+        translations=[{"original": "Hello", "translated": "Bonjour"}],
+        translation_settings=_settings(**settings_kwargs),
+    )
+    (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache))
+    return input_dir, temp_dir, output_dir
+
+
 def test_translate_not_called_for_translated_cache(tmp_path):
     """Pages with translated:true in their cache are skipped — translate() not called for them."""
     input_dir = tmp_path / "input"
@@ -87,9 +119,10 @@ def test_translate_not_called_for_translated_cache(tmp_path):
     (input_dir / "page_002.jpg").write_bytes(page2_bytes)
 
     page1_hash = hashlib.sha256(page1_bytes).hexdigest()
-    cache_001 = _cache(page1_hash, translated=True)
+    cache_001 = _cache(page1_hash, translated=True, translation_settings=_settings())
     (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache_001))
     (temp_dir / "page_001.jpg").write_bytes(b"cleaned")
+    (output_dir / "page_001.jpg").write_bytes(b"translated")
 
     patches = _make_driver_deps()
     with patch.multiple("inference", **{k.replace("inference.", ""): v for k, v in patches.items() if k.startswith("inference.")}), \
@@ -407,3 +440,67 @@ def test_page_with_no_detected_text_is_saved_without_translating(tmp_path):
     patches["inference.replace_text_with_translation"].assert_called_once()
     data = json.loads((tmp_path / "temp" / "page_001.jpg.ocr.json").read_text())
     assert data["texts"] == [] and data["ocr_boxes"] == []
+
+
+def test_output_dir_is_created(tmp_path):
+    input_dir, temp_dir = tmp_path / "input", tmp_path / "temp"
+    input_dir.mkdir()
+    (input_dir / "page_001.jpg").write_bytes(b"fake image")
+    output_dir = tmp_path / "out" / "nested"
+
+    _run(input_dir, temp_dir, output_dir)
+
+    assert output_dir.is_dir()
+
+
+def test_translated_page_with_same_settings_is_skipped(tmp_path):
+    patches = _run(*_translated_page(tmp_path))
+    patches["inference.translate"].assert_not_called()
+    patches["inference.replace_text_with_translation"].assert_not_called()
+
+
+def test_translation_reruns_when_target_language_changes(tmp_path):
+    patches = _run(*_translated_page(tmp_path, target="English"), target="French")
+    patches["inference.translate"].assert_called_once()
+    assert patches["inference.translate"].call_args.kwargs["target_language"] == "French"
+
+
+def test_translation_reruns_when_llm_changes(tmp_path):
+    patches = _run(*_translated_page(tmp_path), config={**_BASE_CONFIG, "llm_name": "other-model"})
+    patches["inference.translate"].assert_called_once()
+
+
+def test_translation_reruns_for_cache_without_settings(tmp_path):
+    input_dir, temp_dir, output_dir = _translated_page(tmp_path)
+    cache_path = temp_dir / "page_001.jpg.ocr.json"
+    cache = json.loads(cache_path.read_text())
+    del cache["translation_settings"]
+    cache_path.write_text(json.dumps(cache))
+
+    patches = _run(input_dir, temp_dir, output_dir)
+
+    patches["inference.translate"].assert_called_once()
+
+
+def test_missing_output_is_rerendered_from_cached_translations(tmp_path):
+    patches = _run(*_translated_page(tmp_path, output_exists=False))
+
+    patches["inference.translate"].assert_not_called()
+    patches["inference.update_session_memory"].assert_not_called()
+    render = patches["inference.replace_text_with_translation"]
+    render.assert_called_once()
+    assert render.call_args.args[2] == [
+        {"original": "Hello", "translated": "Bonjour", "polygon": [0, 0, 10, 10]}
+    ]
+    render.return_value.save.assert_called_once_with(str(tmp_path / "output" / "page_001.jpg"))
+
+
+def test_translation_settings_written_to_cache(tmp_path):
+    input_dir, temp_dir, output_dir = tmp_path / "input", tmp_path / "temp", tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "page_001.jpg").write_bytes(b"fake image")
+
+    _run(input_dir, temp_dir, output_dir, target="French")
+
+    data = json.loads((temp_dir / "page_001.jpg.ocr.json").read_text())
+    assert data["translation_settings"] == _settings(target="French")
