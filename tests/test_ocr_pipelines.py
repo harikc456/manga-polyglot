@@ -283,3 +283,15 @@ def test_non_dict_recognizer_block_rejected(fakes):
             "recognizer": "fakerec",
         })
     assert _BUILT == []
+
+
+# --- overlap grouping through the pipeline --------------------------------
+
+def test_detect_recognize_reads_overlapping_boxes_once(tmp_path):
+    rec = FakeRecognizer(text="hello")
+    nested = [_box(20, 20, 80, 80), _box(30, 30, 50, 50), _box(25, 25, 85, 70)]
+    pipe = DetectRecognize(
+        FakeDetector(nested), rec, make_grouper({"method": "overlap"}), crop_padding=0
+    )
+    assert pipe.run(_page(tmp_path)) == [{"text": "hello", "insertion_polygon": [20, 20, 85, 80]}]
+    assert rec.crops == [(65, 60)]
