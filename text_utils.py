@@ -8,6 +8,16 @@ from pydantic import ValidationError
 from data_model import Translation, SessionMemory
 from memory_utils import serialize_memory, format_memory_for_prompt
 
+# Room for the system prompt, surrounding-page context, session memory and previous translations;
+# Ollama silently drops the start of prompts that exceed num_ctx.
+TRANSLATE_NUM_CTX = 8192
+
+# Plain-text replies are wrapped in these tags: the reply is prefilled with the opening tag and
+# generation stops at the closing one, so lead-ins ("Here is the translation:") and trailing notes
+# never make it into the result, whatever their wording.
+OPEN_TAG, CLOSE_TAG = "<translation>", "</translation>"
+TAG_INSTRUCTION = f"Write the translation inside {OPEN_TAG}{CLOSE_TAG} tags, e.g. {OPEN_TAG}Want some coffee?{CLOSE_TAG}"
+
 # Fixed System Prompt
 SYSTEM_PROMPT = """
 You are an experienced manga translator for one of the biggest publishers in the world.
@@ -30,6 +40,10 @@ CRITICAL OUTPUT RULES:
 - The translated text will replace the original, so its length SHOULD be close to the number of characters inside <text> tags
 """.strip()
 
+# Punctuation that carries tone (emphasis, hesitation) and must survive cleaning, even in runs.
+_EXPRESSIVE_PUNCT = "!?！？…‥.。、・~〜"
+
+
 def clean_ocr_garbage(text: str) -> str:
     if not text.strip():
         return text
@@ -37,14 +51,14 @@ def clean_ocr_garbage(text: str) -> str:
     # Remove long chains of identical box-drawing / line chars
     text = re.sub(r'([┌┐└┘├┤┬┴┼─│━┃═║]{3,})', '', text)          # ≥3 repeated line chars
 
-    # Remove chains of almost any non-letter/symbol punctuation junk
-    text = re.sub(r'([^\w\s\u3000-\u30FF\u4E00-\u9FFF]{3,})', '', text)
+    # Remove chains of almost any non-letter/symbol punctuation junk (expressive punctuation excepted)
+    text = re.sub(rf'([^\w\s\u3000-\u30FF\u4E00-\u9FFF{re.escape(_EXPRESSIVE_PUNCT)}]{{3,}})', '', text)
 
     # Optional: collapse multiple punctuation → single (…… → …)
     text = re.sub(r'([…ー〜\-=]{2,})', lambda m: m.group(1)[0]*min(3, len(m.group(1))), text)
 
-    # Remove trailing/leading junk that often appears
-    text = text.strip(' .,…ー〜└│─═║┌┐┘├┤\u200b\ufeff')  # zero-width & invisible too
+    # Remove trailing/leading junk that often appears. Not ー or …: they are part of the text.
+    text = text.strip(' └│─═║┌┐┘├┤\u200b\ufeff')  # zero-width & invisible too
 
     return text.strip()
 
@@ -62,6 +76,29 @@ def is_japanese_char(char: str) -> bool:
 def contains_japanese(text: str) -> bool:
     """Return True if any character in text is Japanese."""
     return any(is_japanese_char(char) for char in text)
+
+
+def is_japanese_source(source_language: str) -> bool:
+    return source_language.strip().lower() in ("japanese", "ja", "jp", "日本語")
+
+
+def has_letters(text: str) -> bool:
+    """Return True if text contains any letter, in any script (not just punctuation/digits)."""
+    return any(unicodedata.category(char).startswith("L") for char in text)
+
+
+# Model output that talks about the translation instead of being one, e.g. "Here is the translation: ...".
+_META_COMMENTARY = re.compile(r"^(here(?:'s| is)\b[^:]*translat|translated text\b|the translation (?:is|of)\b)")
+
+
+def needs_fallback(translated: str, source_language: str) -> bool:
+    """True when the model's output is unusable: empty, commentary, or still in the (Japanese) source script."""
+    if not translated:
+        return True
+    lower = translated.lower()
+    if _META_COMMENTARY.match(lower) or "onomatopoeia" in lower:
+        return True
+    return is_japanese_source(source_language) and contains_japanese(translated)
 
 
 def _build_prompt_base(
@@ -103,7 +140,7 @@ def get_formatted_user_prompt(
     prompt += f"""Match the tone and atmosphere of the surrounding context in your translation.
 
 - You are to return JSON structure output with two fields
-    - text - the original text that was supposed to be translated. The value of this field should be {text}.
+    - input_text - the original text that was supposed to be translated. The value of this field should be {text}.
     - translated_text - the translation for the input text in {target_language}."""
     return prompt
 
@@ -123,7 +160,7 @@ def get_formatted_user_prompt_with_image(
     prompt += f"""Match the tone and atmosphere of the surrounding context in your translation.
 
 - You are to return JSON structure output with two fields
-    - text - the original text that was supposed to be translated which would be {text}. SHOULD NOT BE EMPTY
+    - input_text - the original text that was supposed to be translated which would be {text}. SHOULD NOT BE EMPTY
     - translated_text - the translation for the input text in {target_language}.
 - Use the provided image to aid your translation"""
     return prompt
@@ -141,8 +178,15 @@ def get_formatted_user_prompt_plain(
         context, text, source_language, target_language,
         previous_translations, session_memory,
     )
-    prompt += "Output ONLY the translated text. No explanation, no commentary."
+    prompt += f"Output ONLY the translated text. No explanation, no commentary.\n{TAG_INSTRUCTION}"
     return prompt
+
+
+def extract_tagged(response: str) -> str:
+    """Return the text between the translation tags; tolerates an echoed opening tag or an ignored stop."""
+    if response.lstrip().startswith(OPEN_TAG):
+        response = response.lstrip()[len(OPEN_TAG):]
+    return response.split(CLOSE_TAG, 1)[0]
 
 
 def clean_translated_text(text: str) -> str:
@@ -176,6 +220,7 @@ def call_llm(
     stop: list = None,
     format: str = None,
     image: Image.Image = None,
+    prefill: str = None,
 ) -> str:
 
     messages = [
@@ -195,6 +240,10 @@ def call_llm(
         })
     else:
         messages.append({"role": "user", "content": user_prompt})
+
+    if prefill:
+        # Ollama continues a trailing assistant message; the reply contains only the continuation.
+        messages.append({"role": "assistant", "content": prefill})
 
     response: ChatResponse = chat(
         model=model,
@@ -226,12 +275,14 @@ def translate(
     session_memory: SessionMemory = None,
     use_json: bool = True,
 ) -> str:
-    # Normalize non-Japanese text early
-    if not contains_japanese(text):
+    # Text with nothing to translate (no source-script characters / no letters) is only normalized
+    japanese = is_japanese_source(source_language)
+    if not (contains_japanese(text) if japanese else has_letters(text)):
         return unicodedata.normalize("NFKC", text)
 
     text = clean_ocr_garbage(text)
-    text = post_process(text)
+    if japanese:
+        text = post_process(text)
 
     if use_json:
         if image is not None:
@@ -247,28 +298,29 @@ def translate(
             )
         response = call_llm(
             model, SYSTEM_PROMPT, user_prompt,
-            format=Translation.model_json_schema(), num_ctx=2048, image=image,
+            format=Translation.model_json_schema(), num_ctx=TRANSLATE_NUM_CTX, image=image,
         )
-        translation = Translation.model_validate_json(response)
-        cleaned_text = clean_translated_text(translation.translated_text)
-
-        if (
-            "translat" in cleaned_text.lower()
-            or "onomatopoeia" in cleaned_text.lower()
-            or contains_japanese(cleaned_text)
-        ):
-            cleaned_text = fallback_translation(
-                text, model, source_language, target_language, image
-            )
+        try:
+            translation = Translation.model_validate_json(response)
+            cleaned_text = clean_translated_text(translation.translated_text)
+        except ValidationError as e:
+            print(f"[translate] WARNING: Invalid JSON response ({e}); using fallback translation.")
+            cleaned_text = ""
     else:
         user_prompt = get_formatted_user_prompt_plain(
             context, text, source_language, target_language,
             previous_translations, session_memory=session_memory,
         )
         response = call_llm(
-            model, SYSTEM_PROMPT, user_prompt, num_ctx=2048, image=image,
+            model, SYSTEM_PROMPT, user_prompt, num_ctx=TRANSLATE_NUM_CTX, image=image,
+            stop=[CLOSE_TAG], prefill=OPEN_TAG,
         )
-        cleaned_text = clean_translated_text(response)
+        cleaned_text = clean_translated_text(extract_tagged(response))
+
+    if needs_fallback(cleaned_text, source_language):
+        cleaned_text = fallback_translation(
+            text, model, source_language, target_language, image
+        )
 
     print(f"Input: {text}")
     print(f"Output: {cleaned_text}\n")
@@ -279,12 +331,15 @@ def translate(
 def fallback_translation(
     text: str, model: str, source_language: str, target_language: str, image: Image.Image = None
 ) -> str:
-    """Fallback: act as Google Translate for direct Japanese → target translation."""
-    system_prompt = f"Your role is to act as DeepL translate. Translate the given a text in{source_language} to {target_language}. Output ONLY the translation."
-    user_prompt = f"Translate to {target_language}: {text}"
+    """Fallback: context-free, machine-translation-style prompt for when the main prompt's output is unusable."""
+    system_prompt = f"Your role is to act as DeepL translate. Translate the given text in {source_language} to {target_language}. Output ONLY the translation."
+    user_prompt = f"Translate to {target_language}: {text}\n{TAG_INSTRUCTION}"
 
-    fallback_translation = call_llm(model, system_prompt, user_prompt, num_ctx=4096, image=image)
-    return clean_translated_text(fallback_translation)
+    fallback_translation = call_llm(
+        model, system_prompt, user_prompt, num_ctx=4096, image=image,
+        stop=[CLOSE_TAG], prefill=OPEN_TAG,
+    )
+    return clean_translated_text(extract_tagged(fallback_translation))
 
 
 MEMORY_UPDATE_SYSTEM_PROMPT = """
