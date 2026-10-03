@@ -44,16 +44,16 @@ Text detection and recognition are pluggable. The `ocr` block of `config.json` s
 
 *   `"pipeline": "spot"` — one model finds and reads text (`spotter` block). Available spotters: `paddleocr_vl`.
 *   `"pipeline": "detect_recognize"` — a `detector` finds text regions and a `recognizer` reads each crop. Available detectors: `yolo`. Available recognizers: `paddleocr_vl`. `crop_padding` (default 10) is set in the `recognizer` block.
-*   `grouping` merges neighbouring boxes into one speech bubble: `{"method": "none"}` or `{"method": "dbscan", "eps": 80}` (`eps` is in thousandths of the longer page side).
+*   `grouping` combines detected boxes before they are read: `{"method": "none"}` (each box on its own), `{"method": "dbscan", "eps": 80}` (merge neighbouring lines into one speech bubble; `eps` is in thousandths of the longer page side), or `{"method": "overlap", "threshold": 0.5}` (merge boxes that overlap by at least `threshold` of the smaller box, including nested boxes, so the same text is not read and cleaned twice; `threshold` is in (0, 1]).
 
-Using the YOLO manga text detector (one box per text region, so no grouping):
+Using the YOLO manga text detector (`overlap` grouping merges duplicate or nested detections):
 
 ```json
 "ocr": {
     "pipeline": "detect_recognize",
     "detector": {"name": "yolo", "repo": "lordtrilink/manga-text-detector-v0", "conf": 0.05, "iou": 0.7, "imgsz": 1024},
     "recognizer": {"name": "paddleocr_vl", "model": "PaddlePaddle/PaddleOCR-VL-1.5", "max_tokens": 128, "crop_padding": 10},
-    "grouping": {"method": "none"}
+    "grouping": {"method": "overlap", "threshold": 0.5}
 }
 ```
 

@@ -19,6 +19,6 @@
             "max_tokens": 128,
             "crop_padding": 10
         },
-        "grouping": {"method": "none"}
+        "grouping": {"method": "overlap", "threshold": 0.5}
     }
 }
