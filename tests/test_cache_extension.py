@@ -14,7 +14,7 @@ _MOCKS = {
     'PIL.Image': MagicMock(),
     'tqdm': MagicMock(),
     'img_utils': MagicMock(),
-    'ocr_utils': MagicMock(),
+    'ocr': MagicMock(),
     'text_utils': MagicMock(),
     'data_model': MagicMock(),
     'memory_utils': MagicMock(),
@@ -26,19 +26,18 @@ with patch.dict(sys.modules, _MOCKS):
 sys.modules['inference'] = inference
 
 
-def test_cache_write_includes_spotting_raw_and_cluster_eps():
-    """First-pass cache must include spotting_raw and cluster_eps."""
+def test_cache_write_includes_ocr_block_and_boxes():
+    """First-pass cache must include the ocr config and the pipeline's boxes."""
     cache_data = {
         "hash": "abc123",
         "texts": ["FROM MY TEACHER"],
         "text_boxes": [[498, 80, 583, 111]],
         "page_context": "FROM MY TEACHER",
-        "spotting_raw": "FROM MY<|LOC_498|><|LOC_80|><|LOC_580|><|LOC_80|><|LOC_580|><|LOC_93|><|LOC_498|><|LOC_93|>",
-        "cluster_eps": 80,
+        "ocr": {"pipeline": "spot", "spotter": {"name": "paddleocr_vl"}},
+        "ocr_boxes": [{"text": "FROM MY TEACHER", "insertion_polygon": [498, 80, 583, 111]}],
     }
-    assert "spotting_raw" in cache_data
-    assert "cluster_eps" in cache_data
-    assert cache_data["cluster_eps"] == 80
+    assert "ocr" in cache_data
+    assert cache_data["ocr_boxes"][0]["insertion_polygon"] == cache_data["text_boxes"][0]
 
 
 def test_cache_write_includes_translations(tmp_path):

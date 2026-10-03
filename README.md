@@ -34,9 +34,32 @@ This project is a tool for translating manga images from one language to another
 The project uses a `config.json` file for configuration. Here's an explanation of the fields:
 
 *   `text_detection_model_path`: Path to the text detection model.
-*   `ocr_model`: The name of the OCR model to use from the Hugging Face Hub.
+*   `ocr`: OCR pipeline settings (see "OCR pipelines" below).
 *   `llm_name`: The name of the large language model to use for translation.
 *   `font_path`: Path to the font to use for rendering the translated text.
+
+### OCR pipelines
+
+Text detection and recognition are pluggable. The `ocr` block of `config.json` selects a pipeline and its components:
+
+*   `"pipeline": "spot"` — one model finds and reads text (`spotter` block). Available spotters: `paddleocr_vl`.
+*   `"pipeline": "detect_recognize"` — a `detector` finds text regions and a `recognizer` reads each crop. Available detectors: `yolo`. Available recognizers: `paddleocr_vl`. `crop_padding` (default 10) is set in the `recognizer` block.
+*   `grouping` merges neighbouring boxes into one speech bubble: `{"method": "none"}` or `{"method": "dbscan", "eps": 80}` (`eps` is in thousandths of the longer page side).
+
+Using the YOLO manga text detector (one box per text region, so no grouping):
+
+```json
+"ocr": {
+    "pipeline": "detect_recognize",
+    "detector": {"name": "yolo", "repo": "lordtrilink/manga-text-detector-v0", "conf": 0.05, "iou": 0.7, "imgsz": 1024},
+    "recognizer": {"name": "paddleocr_vl", "model": "PaddlePaddle/PaddleOCR-VL-1.5", "max_tokens": 128, "crop_padding": 10},
+    "grouping": {"method": "none"}
+}
+```
+
+The YOLO weights (`lordtrilink/manga-text-detector-v0`) download automatically on first use and are licensed CC BY-NC-SA 4.0 (non-commercial use only).
+
+Changing anything in the `ocr` block re-runs OCR for pages already cached in the temp directory.
 
 ## Usage
 

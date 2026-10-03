@@ -11,8 +11,7 @@ from img_utils import (
     fill_bubble_with_estimated_color,
     sort_manga_reading_order,
 )
-from transformers import AutoProcessor, AutoModelForImageTextToText
-from ocr_utils import parse_spotting_output, cluster_into_bubbles, boxes_from_clusters
+from ocr import build_pipeline
 from text_utils import translate, update_session_memory
 from data_model import SessionMemory
 from memory_utils import load_memory
@@ -26,35 +25,6 @@ def _file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def spot_text(img_path: str, model, processor, max_tokens: int = 512) -> str:
-    image = Image.open(img_path).convert("RGB")
-    max_pixels = 2048 * 28 * 28
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": "Spotting:"},
-            ],
-        }
-    ]
-    inputs = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
-        images_kwargs={
-            "size": {
-                "shortest_edge": processor.image_processor.min_pixels,
-                "longest_edge": max_pixels,
-            }
-        },
-    ).to(model.device)
-    outputs = model.generate(**inputs, max_new_tokens=max_tokens)
-    return processor.decode(outputs[0][inputs["input_ids"].shape[-1]:-1])
-
-
 def clean_page(img_path: str, temp_dir: str, boxes: list[dict]) -> str:
     pil_image = Image.open(img_path).convert("RGB")
     file_name = os.path.basename(img_path)
@@ -65,41 +35,20 @@ def clean_page(img_path: str, temp_dir: str, boxes: list[dict]) -> str:
     return cleaned_file_path
 
 
-def _cluster_boxes(spotting_raw: str, img_path: str, cluster_eps: int) -> list[dict]:
-    img = Image.open(img_path)
-    img_w, img_h = img.size
-    lines = parse_spotting_output(spotting_raw, img_w, img_h)
-    eps_pixels = int(cluster_eps / 1000 * max(img_w, img_h))
-    groups = cluster_into_bubbles(lines, eps=eps_pixels)
-    boxes = boxes_from_clusters(groups)
-    return sort_manga_reading_order(boxes)
-
-
 def driver(input_dir, temp_dir, output_dir, config, source_language, target_language):
-    ocr_model_id = config["ocr_model"]
     llm_name = config["llm_name"]
     font_path = config["font_path"]
     image_enabled = config.get("image_enabled", False)
     json_enabled = config.get("json_enabled", True)
     memory_enabled = config.get("memory_enabled", True)
-    cluster_eps = config.get("spotting_cluster_eps", 80)
-    max_tokens = config.get("spotting_max_tokens", 512)
-    # Dense pages (many sound effects/narration boxes) can approach this limit; raise in config.json if spotting looks incomplete.
+    ocr_config = config.get("ocr")
 
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir, exist_ok=True)
     memory_path = os.path.join(temp_dir, "memory.md")
     session_memory = load_memory(memory_path) if memory_enabled else None
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    ocr_model = (
-        AutoModelForImageTextToText.from_pretrained(
-            ocr_model_id, torch_dtype=torch.bfloat16
-        )
-        .to(device)
-        .eval()
-    )
-    processor = AutoProcessor.from_pretrained(ocr_model_id)
+    pipeline = build_pipeline(ocr_config)
 
     img_paths = sorted(os.listdir(input_dir))
     computed = {}
@@ -110,13 +59,18 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
         current_hash = _file_hash(img_path)
         clean_img_path = os.path.join(temp_dir, img_name)
 
-        spotting_raw = None
+        boxes_raw = None
 
         if os.path.exists(cache_path):
             with open(cache_path) as f:
                 cached = json.load(f)
-            if cached.get("hash") == current_hash:
-                if cached.get("cluster_eps") == cluster_eps and os.path.exists(clean_img_path):
+            ocr_ok = (
+                cached.get("hash") == current_hash
+                and cached.get("ocr") == ocr_config
+                and "ocr_boxes" in cached
+            )
+            if ocr_ok:
+                if os.path.exists(clean_img_path):
                     computed[img_path] = {
                         "texts": cached["texts"],
                         "text_boxes": cached["text_boxes"],
@@ -126,13 +80,12 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                         "hash": current_hash,
                     }
                     continue
-                if "spotting_raw" in cached:
-                    spotting_raw = cached["spotting_raw"]
+                boxes_raw = cached["ocr_boxes"]
 
-        if spotting_raw is None:
-            spotting_raw = spot_text(img_path, ocr_model, processor, max_tokens)
+        if boxes_raw is None:
+            boxes_raw = pipeline.run(img_path)
 
-        boxes = _cluster_boxes(spotting_raw, img_path, cluster_eps)
+        boxes = sort_manga_reading_order(boxes_raw)
         texts = [b["text"] for b in boxes]
         text_boxes = [b["insertion_polygon"] for b in boxes]
         page_context = "\n\n".join(texts)
@@ -153,11 +106,12 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                 "texts": texts,
                 "text_boxes": [list(b) for b in text_boxes],
                 "page_context": page_context,
-                "spotting_raw": spotting_raw,
-                "cluster_eps": cluster_eps,
+                "ocr": ocr_config,
+                "ocr_boxes": boxes_raw,
             }, f)
 
-    del ocr_model
+    pipeline.close()
+    del pipeline
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.synchronize()
