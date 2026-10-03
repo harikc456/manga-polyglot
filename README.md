@@ -57,7 +57,7 @@ Using the YOLO manga text detector (one box per text region, so no grouping):
 }
 ```
 
-The YOLO weights (`lordtrilink/manga-text-detector-v0`) download automatically on first use and are licensed CC BY-NC-SA 4.0 (non-commercial use only).
+The YOLO weights (`lordtrilink/manga-text-detector-v0`) download automatically on first use and are licensed CC BY-NC-SA 4.0 (non-commercial use only). The YOLO detector needs `ultralytics`, which `uv sync` installs from `pyproject.toml` (`requirements.txt` does not include it).
 
 Changing anything in the `ocr` block re-runs OCR for pages already cached in the temp directory.
 
