@@ -98,6 +98,12 @@ def test_format_memory_for_prompt_populated():
     assert "Tanaka discovers a hidden door." in result
 
 
+def test_format_memory_for_prompt_pairs_originals_with_translations():
+    result = format_memory_for_prompt(_sample_memory())
+    assert "田中 → Tanaka (male" in result
+    assert "新宿 → Shinjuku" in result
+
+
 def test_serialize_creates_readable_markdown():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "memory.md")
