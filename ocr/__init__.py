@@ -9,14 +9,15 @@ _BLOCKS = {
 }
 
 
-def _build_component(kind: str, block):
+def _parse_component(kind: str, block):
+    """Split a config block into (name, params); raises ValueError for malformed blocks."""
     if not isinstance(block, dict):
         raise ValueError(f"ocr.{kind} must be an object with a 'name'")
     params = dict(block)
     name = params.pop("name", None)
     if name is None:
         raise ValueError(f"ocr.{kind} needs a 'name'. Valid options: {registry.available(kind)}")
-    return registry.build(kind, name, **params)
+    return name, params
 
 
 def build_pipeline(ocr_config):
@@ -44,13 +45,20 @@ def build_pipeline(ocr_config):
     grouper = make_grouper(grouping_config)
 
     if pipeline == "spot":
-        return Spot(_build_component("spotter", config["spotter"]), grouper)
+        name, params = _parse_component("spotter", config["spotter"])
+        registry.validate("spotter", name, **params)
+        return Spot(registry.build("spotter", name, **params), grouper)
 
-    recognizer_block = config["recognizer"]
-    crop_padding = 10
-    if isinstance(recognizer_block, dict):
-        recognizer_block = dict(recognizer_block)
-        crop_padding = recognizer_block.pop("crop_padding", 10)
-    detector = _build_component("detector", config["detector"])
-    recognizer = _build_component("recognizer", recognizer_block)
+    det_name, det_params = _parse_component("detector", config["detector"])
+    rec_name, rec_params = _parse_component("recognizer", config["recognizer"])
+    crop_padding = rec_params.pop("crop_padding", 10)
+    registry.validate("detector", det_name, **det_params)
+    registry.validate("recognizer", rec_name, **rec_params)
+
+    detector = registry.build("detector", det_name, **det_params)
+    try:
+        recognizer = registry.build("recognizer", rec_name, **rec_params)
+    except BaseException:
+        detector.close()
+        raise
     return DetectRecognize(detector, recognizer, grouper, crop_padding=crop_padding)
