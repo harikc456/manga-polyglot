@@ -8,23 +8,23 @@ def imread(imgpath, read_type=cv2.IMREAD_COLOR):
     """Read an image from a file path (supports non-ASCII paths) using OpenCV."""
     return cv2.imdecode(np.fromfile(imgpath, dtype=np.uint8), read_type)
 
-def draw_wrapped_text(image, draw, polygon, text, font_path, font_scale=1.2):
+def draw_wrapped_text(image, draw, polygon, text, font_path):
     x_min, y_min, x_max, y_max = polygon
 
-    box_width = x_max - x_min
-    box_width = int(0.9 * box_width)
-    box_height = y_max - y_min
-    box_height = int(0.9 * box_height)
+    # Fit into 90% of the box so text keeps a margin from the bubble edge.
+    box_width = int(0.9 * (x_max - x_min))
+    box_height = int(0.9 * (y_max - y_min))
 
     font_size, wrapped = find_max_fontsize(
         text, draw, font_path, box_width, box_height, min_size=4, max_size=20
     )
 
-    font = ImageFont.truetype(font_path, math.ceil(font_size * font_scale))
-    bbox = draw.textbbox((0, 0), wrapped, font=font)
+    font = ImageFont.truetype(font_path, font_size)
+    bbox = draw.textbbox((0, 0), wrapped, font=font, align="center")
     text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = x_min + (box_width - text_w) / 2
-    y = y_min + (box_height - text_h) / 2
+    # Centre in the full box; subtract the bbox origin so glyph side bearings don't shift the text.
+    x = x_min + (x_max - x_min - text_w) / 2 - bbox[0]
+    y = y_min + (y_max - y_min - text_h) / 2 - bbox[1]
     background_color = get_background_color(image, x_min, y_min, x_max, y_max)
     fill = get_text_fill_color(background_color)
     draw.text((x, y), wrapped, font=font, fill=fill, align="center")
@@ -35,13 +35,13 @@ def estimate_bubble_bg_color(pil_image, outer_box, border_thickness=12):
     Sample color from a frame near the inside edge of the bubble box.
     Avoids text, avoids outer black border.
     """
-    img_cv = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    img = np.array(pil_image.convert("RGB"))
     x1, y1, x2, y2 = map(int, outer_box)
 
-    h, w = img_cv.shape[:2]
+    h, w = img.shape[:2]
 
     # Create a mask for the border strip only
-    full_roi = img_cv[max(0, y1) : min(h, y2), max(0, x1) : min(w, x2)]
+    full_roi = img[max(0, y1) : min(h, y2), max(0, x1) : min(w, x2)]
     if full_roi.size == 0:
         return (255, 255, 255)
 
@@ -73,7 +73,7 @@ def estimate_bubble_bg_color(pil_image, outer_box, border_thickness=12):
     # Or median (sometimes smoother)
     # most_common = np.median(border_pixels, axis=0).astype(np.uint8)
 
-    return tuple(int(c) for c in most_common)  # BGR → RGB later if needed
+    return tuple(int(c) for c in most_common)  # RGB, ready for PIL
 
 
 def fill_bubble_with_estimated_color(pil_image, outer_box):
@@ -106,7 +106,11 @@ def intersection_over_union(boxA, boxB):
 
 
 def sort_manga_reading_order(boxes):
-    """Sort insertion boxes in manga reading order: right-to-left columns, top-to-bottom within each column."""
+    """Sort insertion boxes in manga reading order: rows top-to-bottom, right-to-left within each row.
+
+    A box joins a row when it overlaps the row's first (topmost) box vertically by at least half of
+    the shorter box's height, so bubbles that are only slightly staggered still share a row.
+    """
     if not boxes:
         return boxes
 
@@ -117,33 +121,25 @@ def sort_manga_reading_order(boxes):
         x1, _, x2, _ = get_poly(box)
         return (x1 + x2) / 2
 
-    def cy(box):
-        _, y1, _, y2 = get_poly(box)
-        return (y1 + y2) / 2
+    def same_row(anchor, box):
+        _, a_y1, _, a_y2 = get_poly(anchor)
+        _, b_y1, _, b_y2 = get_poly(box)
+        overlap = min(a_y2, b_y2) - max(a_y1, b_y1)
+        shorter = min(a_y2 - a_y1, b_y2 - b_y1)
+        return shorter > 0 and overlap >= 0.5 * shorter
 
-    widths = sorted(get_poly(b)[2] - get_poly(b)[0] for b in boxes)
-    tolerance = widths[len(widths) // 2]
-
-    sorted_boxes = sorted(boxes, key=lambda b: -cx(b))
-
-    columns = []
-    col_cx_vals = []
-
-    for box in sorted_boxes:
-        box_cx = cx(box)
-        assigned = False
-        for i, col_cx_val in enumerate(col_cx_vals):
-            if abs(box_cx - col_cx_val) <= tolerance:
-                columns[i].append(box)
-                assigned = True
+    rows = []
+    for box in sorted(boxes, key=lambda b: get_poly(b)[1]):
+        for row in rows:
+            if same_row(row[0], box):
+                row.append(box)
                 break
-        if not assigned:
-            columns.append([box])
-            col_cx_vals.append(box_cx)
+        else:
+            rows.append([box])
 
     result = []
-    for col in columns:
-        result.extend(sorted(col, key=cy))
+    for row in rows:
+        result.extend(sorted(row, key=lambda b: -cx(b)))
     return result
 
 
@@ -264,8 +260,12 @@ def fits_in_box(text, draw, font, box_w, box_h):
 
 
 def find_max_fontsize(text, draw, font_path, box_w, box_h, min_size=1, max_size=200):
-    """Find the largest font size where wrapped text fits inside box."""
-    best_size, best_wrapped = min_size, text
+    """Find the largest font size where wrapped text fits inside box.
+
+    If nothing fits, returns min_size with the text wrapped at that size (it may still overflow).
+    """
+    floor = min_size
+    best_size, best_wrapped = None, None
     while min_size <= max_size:
         mid = (min_size + max_size) // 2
         font = ImageFont.truetype(font_path, mid)
@@ -275,6 +275,9 @@ def find_max_fontsize(text, draw, font_path, box_w, box_h, min_size=1, max_size=
             min_size = mid + 1  # try bigger
         else:
             max_size = mid - 1  # too big
+    if best_size is None:
+        _, best_wrapped = fits_in_box(text, draw, ImageFont.truetype(font_path, floor), box_w, box_h)
+        best_size = floor
     return best_size, best_wrapped
 
 
