@@ -5,12 +5,20 @@
     "json_enabled": false,
     "memory_enabled": false,
     "ocr": {
-        "pipeline": "spot",
-        "spotter": {
+        "pipeline": "detect_recognize",
+        "detector": {
+            "name": "yolo",
+            "repo": "lordtrilink/manga-text-detector-v0",
+            "conf": 0.05,
+            "iou": 0.7,
+            "imgsz": 1024
+        },
+        "recognizer": {
             "name": "paddleocr_vl",
             "model": "PaddlePaddle/PaddleOCR-VL-1.5",
-            "max_tokens": 512
+            "max_tokens": 128,
+            "crop_padding": 10
         },
-        "grouping": {"method": "dbscan", "eps": 80}
+        "grouping": {"method": "none"}
     }
 }
