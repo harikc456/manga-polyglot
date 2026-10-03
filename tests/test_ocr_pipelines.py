@@ -7,11 +7,13 @@ from ocr.grouping import make_grouper
 from ocr.pipelines import DetectRecognize, Spot
 
 _BUILT = []
+_DETECTORS = []
 
 
 class FakeDetector(Detector):
     def __init__(self, boxes=None):
         _BUILT.append("detector")
+        _DETECTORS.append(self)
         self.boxes = boxes or []
         self.modes = []
         self.closed = False
@@ -161,6 +163,7 @@ def test_spot_close_closes_spotter():
 @pytest.fixture
 def fakes(isolated_registry):
     _BUILT.clear()
+    _DETECTORS.clear()
     registry.register("detector", "fakedet")(FakeDetector)
     registry.register("recognizer", "fakerec")(FakeRecognizer)
     registry.register("spotter", "fakespot")(FakeSpotter)
@@ -238,3 +241,45 @@ def test_build_pipeline_does_not_mutate_the_config(fakes):
     build_pipeline(config)
     assert config["recognizer"] == {"name": "fakerec", "crop_padding": 7}
     assert config["detector"] == {"name": "fakedet"}
+
+
+@pytest.mark.parametrize("recognizer, match", [
+    ({"name": "missing"}, "Unknown recognizer 'missing'"),
+    ({"name": "fakerec", "bogus": 1}, "Unknown params"),
+])
+def test_bad_recognizer_is_rejected_before_detector_is_built(fakes, recognizer, match):
+    with pytest.raises(ValueError, match=match):
+        build_pipeline({
+            "pipeline": "detect_recognize",
+            "detector": {"name": "fakedet"},
+            "recognizer": recognizer,
+        })
+    assert _BUILT == []
+
+
+def test_detector_is_closed_if_recognizer_construction_fails(fakes):
+    class Boom(Recognizer):
+        def __init__(self):
+            raise RuntimeError("boom")
+
+        def read(self, crop):
+            return ""
+
+    registry.register("recognizer", "boom")(Boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        build_pipeline({
+            "pipeline": "detect_recognize",
+            "detector": {"name": "fakedet"},
+            "recognizer": {"name": "boom"},
+        })
+    assert len(_DETECTORS) == 1 and _DETECTORS[0].closed
+
+
+def test_non_dict_recognizer_block_rejected(fakes):
+    with pytest.raises(ValueError, match="must be an object"):
+        build_pipeline({
+            "pipeline": "detect_recognize",
+            "detector": {"name": "fakedet"},
+            "recognizer": "fakerec",
+        })
+    assert _BUILT == []

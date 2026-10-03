@@ -52,7 +52,7 @@ def _check_params(kind: str, name: str, cls: type, params: dict) -> None:
         )
 
 
-def build(kind: str, name: str, **params):
+def _resolve(kind: str, name: str) -> type:
     _check_kind(kind)
     if name not in _REGISTRY[kind]:
         module = _BUILTIN_MODULES.get((kind, name))
@@ -61,6 +61,15 @@ def build(kind: str, name: str, **params):
         importlib.import_module(module)
         if name not in _REGISTRY[kind]:
             raise ValueError(f"Module '{module}' did not register {kind} '{name}'")
-    cls = _REGISTRY[kind][name]
+    return _REGISTRY[kind][name]
+
+
+def validate(kind: str, name: str, **params) -> None:
+    """Check name and params exactly as build() would, without instantiating."""
+    _check_params(kind, name, _resolve(kind, name), params)
+
+
+def build(kind: str, name: str, **params):
+    cls = _resolve(kind, name)
     _check_params(kind, name, cls, params)
     return cls(**params)
