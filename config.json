@@ -1,10 +1,16 @@
 {
-    "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
     "llm_name": "translategemma:12b",
     "font_path": "./fonts/animeace2_bld.otf",
     "image_enabled": false,
     "json_enabled": false,
     "memory_enabled": false,
-    "spotting_cluster_eps": 80,
-    "spotting_max_tokens": 512
+    "ocr": {
+        "pipeline": "spot",
+        "spotter": {
+            "name": "paddleocr_vl",
+            "model": "PaddlePaddle/PaddleOCR-VL-1.5",
+            "max_tokens": 512
+        },
+        "grouping": {"method": "dbscan", "eps": 80}
+    }
 }
