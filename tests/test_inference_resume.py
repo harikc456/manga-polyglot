@@ -504,3 +504,18 @@ def test_translation_settings_written_to_cache(tmp_path):
 
     data = json.loads((temp_dir / "page_001.jpg.ocr.json").read_text())
     assert data["translation_settings"] == _settings(target="French")
+
+
+def test_expand_text_area_defaults_on_when_rendering(tmp_path):
+    patches = _run(*_translated_page(tmp_path, output_exists=False))
+
+    render = patches["inference.replace_text_with_translation"]
+    assert render.call_args.kwargs["expand_text_area"] is True
+
+
+def test_expand_text_area_flag_is_passed_to_rendering(tmp_path):
+    config = {**_BASE_CONFIG, "expand_text_area": False}
+    patches = _run(*_translated_page(tmp_path, output_exists=False), config=config)
+
+    render = patches["inference.replace_text_with_translation"]
+    assert render.call_args.kwargs["expand_text_area"] is False

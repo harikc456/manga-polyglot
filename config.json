@@ -4,6 +4,7 @@
     "image_enabled": false,
     "json_enabled": false,
     "memory_enabled": false,
+    "expand_text_area": true,
     "ocr": {
         "pipeline": "detect_recognize",
         "detector": {

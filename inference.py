@@ -53,6 +53,7 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     image_enabled = config.get("image_enabled", False)
     json_enabled = config.get("json_enabled", True)
     memory_enabled = config.get("memory_enabled", True)
+    expand_text_area = config.get("expand_text_area", True)
     ocr_config = config.get("ocr")
     translation_settings = _translation_settings(config, source_language, target_language)
 
@@ -155,7 +156,9 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
                     {**t, "polygon": box}
                     for t, box in zip(cache_data.get("translations", []), precomputed_vals["text_boxes"])
                 ]
-                replace_text_with_translation(cleaned_file_path, font_path, cached).save(out_path)
+                replace_text_with_translation(
+                    cleaned_file_path, font_path, cached, expand_text_area=expand_text_area
+                ).save(out_path)
             continue
 
         translations = []
@@ -206,7 +209,7 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
             )
 
         translated_image = replace_text_with_translation(
-            cleaned_file_path, font_path, translations
+            cleaned_file_path, font_path, translations, expand_text_area=expand_text_area
         )
         translated_image.save(out_path)
 
