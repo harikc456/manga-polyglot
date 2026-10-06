@@ -6,7 +6,7 @@
     "json_enabled": false,
     "memory_enabled": false,
     "expand_text_area": true,
-    "max_font_size": 64,
+    "max_font_size": 48,
     "ocr": {
         "pipeline": "detect_recognize",
         "detector": {
