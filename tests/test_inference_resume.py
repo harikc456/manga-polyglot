@@ -1,3 +1,4 @@
+import pytest
 import hashlib
 import json
 import sys
@@ -33,6 +34,11 @@ _OCR_CONFIG = {
 }
 
 
+def _fake_memory(summary):
+    """Stand-in for a SessionMemory; data_model is mocked, so the driver only sees what it dumps."""
+    return MagicMock(summary=summary, model_dump=MagicMock(return_value={"summary": summary}))
+
+
 def _make_driver_deps():
     pipeline = MagicMock()
     pipeline.run.return_value = _FAKE_BOXES
@@ -41,9 +47,12 @@ def _make_driver_deps():
         "inference.sort_manga_reading_order": MagicMock(side_effect=lambda boxes: boxes),
         "inference.clean_page": MagicMock(side_effect=lambda img_path, temp_dir, *a, **kw: img_path),
         "inference.translate": MagicMock(return_value="こんにちは"),
-        "inference.update_session_memory": MagicMock(return_value=MagicMock()),
+        "inference.update_session_memory": MagicMock(return_value=_fake_memory("updated")),
         "inference.replace_text_with_translation": MagicMock(return_value=MagicMock()),
-        "inference.load_memory": MagicMock(return_value=MagicMock()),
+        "inference.SessionMemory": MagicMock(
+            return_value=_fake_memory("empty"),
+            model_validate=MagicMock(side_effect=lambda d: _fake_memory(d["summary"])),
+        ),
         "inference.tqdm": MagicMock(side_effect=lambda x: x),
     }
     return patches
@@ -101,6 +110,7 @@ def _translated_page(tmp_path, output_exists=True, **settings_kwargs):
         translated=True,
         translations=[{"original": "Hello", "translated": "Bonjour"}],
         translation_settings=_settings(**settings_kwargs),
+        render_settings=inference._render_settings(_BASE_CONFIG),
     )
     (temp_dir / "page_001.jpg.ocr.json").write_text(json.dumps(cache))
     return input_dir, temp_dir, output_dir
@@ -289,7 +299,7 @@ def test_ocr_cache_miss_on_hash_mismatch(tmp_path):
 
 
 def test_memory_not_loaded_or_updated_when_memory_disabled(tmp_path):
-    """When memory_enabled=False, load_memory and update_session_memory are never called."""
+    """When memory_enabled=False, memory is never created, updated or saved in the cache."""
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     temp_dir = tmp_path / "temp"
@@ -305,8 +315,9 @@ def test_memory_not_loaded_or_updated_when_memory_disabled(tmp_path):
          patch("torch.cuda.synchronize"), patch("torch.cuda.empty_cache"):
         driver(str(input_dir), str(temp_dir), str(output_dir), config, "Japanese", "English")
 
-    patches["inference.load_memory"].assert_not_called()
+    patches["inference.SessionMemory"].assert_not_called()
     patches["inference.update_session_memory"].assert_not_called()
+    assert "memory" not in json.loads((temp_dir / "page_001.jpg.ocr.json").read_text())
 
 
 def test_translate_called_with_use_json_false_when_json_disabled(tmp_path):
@@ -519,3 +530,101 @@ def test_expand_text_area_flag_is_passed_to_rendering(tmp_path):
 
     render = patches["inference.replace_text_with_translation"]
     assert render.call_args.kwargs["expand_text_area"] is False
+
+
+def _pages(tmp_path, n):
+    input_dir, temp_dir, output_dir = tmp_path / "input", tmp_path / "temp", tmp_path / "output"
+    input_dir.mkdir(); temp_dir.mkdir(); output_dir.mkdir()
+    for i in range(1, n + 1):
+        (input_dir / f"page_{i:03d}.jpg").write_bytes(f"image {i}".encode())
+    return input_dir, temp_dir, output_dir
+
+
+def test_memory_snapshot_saved_in_page_cache(tmp_path):
+    input_dir, temp_dir, output_dir = _pages(tmp_path, 1)
+    _run(input_dir, temp_dir, output_dir)
+    cache = json.loads((temp_dir / "page_001.jpg.ocr.json").read_text())
+    assert cache["memory"] == {"summary": "updated"}
+
+
+def test_memory_starts_empty_not_from_memory_file(tmp_path):
+    """A leftover memory.md from an earlier run must not leak into a fresh translation."""
+    input_dir, temp_dir, output_dir = _pages(tmp_path, 1)
+    (temp_dir / "memory.md").write_text("## Story Summary\nThe ending of the volume.")
+    patches = _run(input_dir, temp_dir, output_dir)
+    assert patches["inference.translate"].call_args.kwargs["session_memory"].summary == "empty"
+
+
+def test_retranslation_resumes_from_previous_page_snapshot(tmp_path):
+    """Page 2 is retranslated with the memory as it was after the cached page 1."""
+    input_dir, temp_dir, output_dir = _pages(tmp_path, 2)
+    _run(input_dir, temp_dir, output_dir)
+    for i in (1, 2):
+        (temp_dir / f"page_{i:03d}.jpg").write_bytes(b"cleaned")  # clean_page is mocked and writes nothing
+    page1 = temp_dir / "page_001.jpg.ocr.json"
+    page1.write_text(json.dumps({**json.loads(page1.read_text()), "memory": {"summary": "after page 1"}}))
+    (input_dir / "page_002.jpg").write_bytes(b"changed image")
+
+    patches = _run(input_dir, temp_dir, output_dir)
+
+    patches["inference.translate"].assert_called_once()
+    assert patches["inference.translate"].call_args.kwargs["session_memory"].summary == "after page 1"
+
+
+def test_memory_updated_with_memory_llm_name(tmp_path):
+    input_dir, temp_dir, output_dir = _pages(tmp_path, 1)
+    patches = _run(input_dir, temp_dir, output_dir, config={**_BASE_CONFIG, "memory_llm_name": "mem-model"})
+    assert patches["inference.update_session_memory"].call_args.args[2] == "mem-model"
+    assert patches["inference.translate"].call_args.args[1] == "d"
+
+
+def test_memory_llm_name_defaults_to_llm_name(tmp_path):
+    input_dir, temp_dir, output_dir = _pages(tmp_path, 1)
+    patches = _run(input_dir, temp_dir, output_dir)
+    assert patches["inference.update_session_memory"].call_args.args[2] == "d"
+
+
+def test_memory_model_change_invalidates_translations():
+    assert _settings({**_BASE_CONFIG, "memory_llm_name": "other"}) != _settings()
+
+
+@pytest.mark.parametrize("change", [{"expand_text_area": False}, {"font_path": "other.otf"}])
+def test_render_setting_change_rerenders_without_retranslating(tmp_path, change):
+    input_dir, temp_dir, output_dir = _translated_page(tmp_path)
+    patches = _run(input_dir, temp_dir, output_dir, config={**_BASE_CONFIG, **change})
+
+    patches["inference.translate"].assert_not_called()
+    render = patches["inference.replace_text_with_translation"]
+    render.assert_called_once()
+    render.return_value.save.assert_called_once_with(str(output_dir / "page_001.jpg"))
+    cache = json.loads((temp_dir / "page_001.jpg.ocr.json").read_text())
+    assert cache["render_settings"] == inference._render_settings({**_BASE_CONFIG, **change})
+
+
+def test_cache_without_render_settings_is_rerendered(tmp_path):
+    input_dir, temp_dir, output_dir = _translated_page(tmp_path)
+    cache_path = temp_dir / "page_001.jpg.ocr.json"
+    cache = json.loads(cache_path.read_text())
+    del cache["render_settings"]
+    cache_path.write_text(json.dumps(cache))
+
+    patches = _run(input_dir, temp_dir, output_dir)
+
+    patches["inference.translate"].assert_not_called()
+    patches["inference.replace_text_with_translation"].assert_called_once()
+
+
+def test_render_settings_written_after_translation(tmp_path):
+    input_dir, temp_dir, output_dir = _pages(tmp_path, 1)
+    _run(input_dir, temp_dir, output_dir)
+    cache = json.loads((temp_dir / "page_001.jpg.ocr.json").read_text())
+    assert cache["render_settings"] == inference._render_settings(_BASE_CONFIG)
+
+
+def test_max_font_size_passed_to_rendering(tmp_path):
+    patches = _run(*_translated_page(tmp_path, output_exists=False), config={**_BASE_CONFIG, "max_font_size": 80})
+    assert patches["inference.replace_text_with_translation"].call_args.kwargs["max_font_size"] == 80
+
+
+def test_max_font_size_change_rerenders():
+    assert inference._render_settings({**_BASE_CONFIG, "max_font_size": 80}) != inference._render_settings(_BASE_CONFIG)

@@ -4,7 +4,7 @@ import tempfile
 import pytest
 from pydantic import ValidationError
 from data_model import CharacterEntry, EntityEntry, SessionMemory
-from memory_utils import serialize_memory, load_memory, format_memory_for_prompt
+from memory_utils import serialize_memory, load_memory, format_memory_for_prompt, merge_memory, filter_memory, format_glossary
 
 
 def test_character_entry_defaults():
@@ -130,3 +130,118 @@ def test_serialize_load_roundtrip_with_pipe_in_notes():
         serialize_memory(mem, path)
         loaded = load_memory(path)
     assert loaded.characters[0].notes == "hero | protagonist"
+
+
+def test_format_memory_for_prompt_one_entry_per_line():
+    lines = format_memory_for_prompt(_sample_memory()).splitlines()
+    assert "- 田中 → Tanaka (male, protagonist)" in lines
+    assert "- 桜 → Sakura (female)" in lines
+    assert "- 新宿 → Shinjuku" in lines
+
+
+def _char(original, translated, gender="unknown", notes=""):
+    return CharacterEntry(original_name=original, translated_name=translated, gender=gender, notes=notes)
+
+
+def test_merge_keeps_entries_missing_from_update():
+    merged = merge_memory(_sample_memory(), SessionMemory(story_summary="New summary."), "なにもない")
+    assert [c.translated_name for c in merged.characters] == ["Tanaka", "Sakura"]
+    assert merged.places == _sample_memory().places
+    assert merged.organizations == _sample_memory().organizations
+    assert merged.story_summary == "New summary."
+
+
+def test_merge_never_renames_known_entities():
+    update = SessionMemory(
+        characters=[_char("田中", "Mr. Tanaka", "female")],
+        places=[EntityEntry(original="新宿", translated="Shinjuku Ward")],
+    )
+    merged = merge_memory(_sample_memory(), update, "田中は新宿にいる")
+    assert merged.characters[0].translated_name == "Tanaka"
+    assert merged.characters[0].gender == "male"
+    assert merged.places == [EntityEntry(original="新宿", translated="Shinjuku")]
+
+
+def test_merge_fills_unknown_gender_and_empty_notes():
+    memory = SessionMemory(characters=[_char("桜", "Sakura")])
+    merged = merge_memory(memory, SessionMemory(characters=[_char("桜", "Sakura-chan", "female", "classmate")]), "")
+    assert merged.characters[0] == _char("桜", "Sakura", "female", "classmate")
+    assert memory.characters[0].gender == "unknown"  # input memory is not mutated
+
+
+def test_merge_adds_new_entities_found_on_page():
+    update = SessionMemory(
+        characters=[_char("佐藤", "Sato", "female")],
+        places=[EntityEntry(original="渋谷", translated="Shibuya")],
+        organizations=[EntityEntry(original="白狐", translated="White Fox")],
+    )
+    merged = merge_memory(SessionMemory(), update, "佐藤は渋谷で白狐に会った")
+    assert merged.characters == [_char("佐藤", "Sato", "female")]
+    assert merged.places == [EntityEntry(original="渋谷", translated="Shibuya")]
+    assert merged.organizations == [EntityEntry(original="白狐", translated="White Fox")]
+
+
+def test_merge_rejects_entities_not_on_page():
+    update = SessionMemory(
+        characters=[_char("鈴木", "Suzuki", "male")],
+        places=[EntityEntry(original="大阪", translated="Osaka")],
+    )
+    merged = merge_memory(SessionMemory(), update, "佐藤は渋谷にいる")
+    assert merged.characters == []
+    assert merged.places == []
+
+
+@pytest.mark.parametrize("original,translated", [("", "Nobody"), ("佐藤", " "), ("佐藤" * 11, "Sato" * 11)])
+def test_merge_rejects_empty_or_overlong_entities(original, translated):
+    update = SessionMemory(characters=[_char(original, translated)])
+    assert merge_memory(SessionMemory(), update, "佐藤" * 20).characters == []
+
+
+def test_merge_matches_names_across_width_and_whitespace():
+    update = SessionMemory(characters=[_char("ＡＢＣ", "ABC"), _char("ABC", "Abc")])
+    merged = merge_memory(SessionMemory(), update, "A B C が来た")
+    assert merged.characters == [_char("ＡＢＣ", "ABC")]  # accepted once, duplicate dropped
+
+
+def test_merge_keeps_summary_when_update_has_none():
+    assert merge_memory(_sample_memory(), SessionMemory(), "").story_summary == "Tanaka discovers a hidden door."
+
+
+def test_filter_memory_keeps_only_entities_in_text():
+    filtered = filter_memory(_sample_memory(), "[Current Page] 桜、新宿に行こう")
+    assert [c.original_name for c in filtered.characters] == ["桜"]
+    assert [p.original for p in filtered.places] == ["新宿"]
+    assert filtered.organizations == []
+    assert filtered.story_summary == "Tanaka discovers a hidden door."
+
+
+def test_format_glossary_lists_all_entities():
+    assert format_glossary(_sample_memory()) == [
+        "田中 → Tanaka (male, protagonist)",
+        "桜 → Sakura (female)",
+        "新宿 → Shinjuku",
+        "黒烏 → Black Crow Corp",
+    ]
+
+
+def test_merge_treats_honorific_variant_as_known_character():
+    memory = SessionMemory(characters=[_char("田中", "Tanaka")])
+    update = SessionMemory(characters=[_char("田中先輩", "Tanaka-senpai", "male")])
+    merged = merge_memory(memory, update, "田中先輩！待って")
+    assert merged.characters == [_char("田中", "Tanaka", "male")]
+
+
+def test_merge_keeps_name_that_is_only_an_honorific_word():
+    update = SessionMemory(characters=[_char("先生", "Teacher")])
+    assert merge_memory(SessionMemory(), update, "先生が来た").characters == [_char("先生", "Teacher")]
+
+
+def test_merge_drops_rambling_notes():
+    update = SessionMemory(characters=[_char("桜", "Sakura", "female", "x" * 200), _char("佐藤", "Sato", notes="rival")])
+    merged = merge_memory(SessionMemory(), update, "桜と佐藤")
+    assert [c.notes for c in merged.characters] == ["", "rival"]
+
+
+def test_filter_memory_matches_character_with_honorific():
+    memory = SessionMemory(characters=[_char("田中先輩", "Tanaka")])
+    assert filter_memory(memory, "田中さん、おはよう").characters == memory.characters

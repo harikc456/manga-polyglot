@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from text_utils import TRANSLATE_NUM_CTX, clean_ocr_garbage, get_formatted_user_prompt_plain, translate
+from text_utils import TRANSLATE_NUM_CTX, clean_ocr_garbage, fix_misread_wave_dash, get_formatted_user_prompt_plain, translate
 
 
 @pytest.mark.parametrize("text", ["コーヒー", "サッカー", "ねー", "ーあ"])
@@ -215,3 +215,42 @@ def test_json_prompts_name_schema_fields():
         for field in Translation.model_fields:
             assert f"- {field} -" in prompt
         assert "- text -" not in prompt
+
+
+def test_call_llm_disables_thinking_as_top_level_argument():
+    from text_utils import call_llm
+
+    with patch("text_utils.chat") as mock_chat:
+        mock_chat.return_value.message.content = "Hello"
+        call_llm("m", "sys", "user")
+    assert mock_chat.call_args.kwargs["think"] is False
+    assert "think" not in mock_chat.call_args.kwargs["options"]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("\u5582S!", "\u5582〜!"),  # 喂S! — vertical 〜 read as S
+        ("あS", "あ〜"),
+        ("ねs？", "ね〜？"),
+        ("えＳっ！", "え〜っ！"),
+        ("待ってSS…", "待って〜〜…"),
+        ("おーいS 来て", "おーい〜 来て"),
+    ],
+)
+def test_fix_misread_wave_dash(text, expected):
+    assert fix_misread_wave_dash(text) == expected
+
+
+@pytest.mark.parametrize("text", ["Sランク", "Sクラスの魔物", "S級だ!", "SOS!", "あのSNSで", "Mr.S", "Yes!"])
+def test_fix_misread_wave_dash_keeps_real_letters(text):
+    assert fix_misread_wave_dash(text) == text
+
+
+def test_translate_fixes_wave_dash_in_text_and_context():
+    response = '{"input_text": "x", "translated_text": "Hey!"}'
+    with patch("text_utils.call_llm", return_value=response) as mock_llm:
+        translate("あS!", model="m", context="[Current Page] あS!", source_language="Japanese")
+    user_prompt = mock_llm.call_args.args[2]
+    assert "S!" not in user_prompt
+    assert "<context>[Current Page] あ〜!</context>" in user_prompt

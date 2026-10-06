@@ -1,10 +1,12 @@
 {
     "llm_name": "translategemma:12b",
+    "memory_llm_name": "qwen3.5:4b",
     "font_path": "./fonts/animeace2_bld.otf",
     "image_enabled": false,
     "json_enabled": false,
     "memory_enabled": false,
     "expand_text_area": true,
+    "max_font_size": 64,
     "ocr": {
         "pipeline": "detect_recognize",
         "detector": {

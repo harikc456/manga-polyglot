@@ -1,8 +1,13 @@
 import cv2
 import math
+import re
+import unicodedata
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from collections import Counter
+from dataclasses import dataclass
+from functools import lru_cache
+from fontTools.ttLib import TTFont
 
 def imread(imgpath, read_type=cv2.IMREAD_COLOR):
     """Read an image from a file path (supports non-ASCII paths) using OpenCV."""
@@ -24,24 +29,71 @@ def _scaled_area(area, scale, image_size):
     )
 
 
-def draw_wrapped_text(image, draw, polygon, text, font_path, text_area=None):
+# Largest font for text in an expanded area (short text in a big bubble); overridable per page.
+MAX_FONT_SIZE = 64
+
+
+def _max_font_size(area, expanded, cap=MAX_FONT_SIZE):
+    # An expanded area may take a bigger font, scaled to its height but capped so it stays readable.
+    return min(cap, max(20, (area[3] - area[1]) // 4)) if expanded else 20
+
+
+def _fit_in(text, draw, font_path, area, max_size):
+    x_min, y_min, x_max, y_max = area
+    # Keep a small margin from the edge of the area.
+    box_width = int(0.94 * (x_max - x_min))
+    box_height = int(0.94 * (y_max - y_min))
+    return fit_text(text, draw, font_path, box_width, box_height, min_size=MIN_LEGIBLE_SIZE, max_size=max_size)
+
+
+def _text_colours(image, polygon):
+    fill = get_text_fill_color(get_background_color(image, *polygon))
+    return fill, "white" if fill == "black" else "black"
+
+
+def _draw_shaped(image, draw, polygon, layout, font_path):
+    font = ImageFont.truetype(font_path, layout.size)
+    stroke = stroke_width_for(layout.size)
+    fill, outline = _text_colours(image, polygon)
+    for line in layout.lines:
+        bbox = draw.textbbox((0, 0), line.text, font=font, stroke_width=stroke)
+        # Centre on the line; subtract the bbox origin so glyph side bearings don't shift the text.
+        x = (line.left + line.right) / 2 - (bbox[2] - bbox[0]) / 2 - bbox[0]
+        draw.text((x, line.top + stroke), line.text, font=font, fill=fill, stroke_width=stroke, stroke_fill=outline)
+
+
+def draw_wrapped_text(
+    image, draw, polygon, text, font_path, text_area=None, text_areas=None, text_region=None, max_font_size=MAX_FONT_SIZE
+):
     """Draw text fitted into text_area (defaults to polygon); colours are taken from around polygon.
 
-    When the text cannot be set at a legible size, the area is grown (up to 2x about its centre) so
-    tiny source boxes do not force one-character lines.
+    With text_region (the bubble from find_text_region), lines follow the bubble's shape, unless one of
+    its rectangles takes a bigger font. With text_areas (candidate rectangles), the one that takes the
+    largest font is used. When the text cannot be set at a legible size, the area is grown (up to 2x
+    about its centre) so tiny source boxes do not force one-character lines.
     """
-    base = tuple(text_area or polygon)
-    # An expanded area may take a bigger font, scaled to its height but capped so it stays readable.
-    max_size = 20 if text_area is None else min(36, max(20, (base[3] - base[1]) // 4))
+    if text_region is not None and not text_areas:
+        # The cleaned box itself is offered last, in case its own shape suits the text best.
+        text_areas = text_areas_in_region(text_region) + [list(polygon)]
+    expanded = bool(text_areas) or text_area is not None
+    candidates = [tuple(a) for a in text_areas] if text_areas else [tuple(text_area or polygon)]
+    base, best_size = candidates[0], -1
+    if len(candidates) > 1:
+        for area in candidates:
+            size, _, fits = _fit_in(text, draw, font_path, area, _max_font_size(area, expanded, max_font_size))
+            if fits and size > best_size:
+                base, best_size = area, size
+    max_size = _max_font_size(base, expanded, max_font_size)
+
+    if text_region is not None:
+        shaped = layout_in_region(text, text_region, font_path, max_font_size)
+        if shaped is not None and shaped.size >= best_size:
+            _draw_shaped(image, draw, polygon, shaped, font_path)
+            return
 
     for scale in GROW_STEPS:
         x_min, y_min, x_max, y_max = _scaled_area(base, scale, image.size)
-        # Keep a small margin from the edge of the area.
-        box_width = int(0.94 * (x_max - x_min))
-        box_height = int(0.94 * (y_max - y_min))
-        font_size, wrapped, fits = fit_text(
-            text, draw, font_path, box_width, box_height, min_size=MIN_LEGIBLE_SIZE, max_size=max_size
-        )
+        font_size, wrapped, fits = _fit_in(text, draw, font_path, (x_min, y_min, x_max, y_max), max_size)
         if fits:
             break
 
@@ -52,85 +104,298 @@ def draw_wrapped_text(image, draw, polygon, text, font_path, text_area=None):
     # Centre in the full box; subtract the bbox origin so glyph side bearings don't shift the text.
     x = x_min + (x_max - x_min - text_w) / 2 - bbox[0]
     y = y_min + (y_max - y_min - text_h) / 2 - bbox[1]
-    background_color = get_background_color(image, *polygon)
-    fill = get_text_fill_color(background_color)
-    outline = "white" if fill == "black" else "black"
+    fill, outline = _text_colours(image, polygon)
     draw.text(
         (x, y), wrapped, font=font, fill=fill, align="center", stroke_width=stroke, stroke_fill=outline
     )
 
 
-def find_text_area(image, box, other_boxes=(), tolerance=12, edge_gap=4, min_inside=0.98):
-    """Grow a cleaned text box into the empty bubble around it.
+def _box_distance(xs, ys, box):
+    """Distance from each (xs, ys) point to the rectangle box (0 inside it)."""
+    x0, y0, x1, y1 = box
+    dx = np.maximum(np.maximum(x0 - xs, 0), xs - x1)
+    dy = np.maximum(np.maximum(y0 - ys, 0), ys - y1)
+    return np.hypot(dx, dy)
 
-    Flood-fills the bubble colour outward from the box on the cleaned page and grows the box while it
-    stays inside that region. Returns box unchanged unless the region is clearly enclosed: it must not
-    reach the edge of the search window (open background or art) or contain another text box.
+
+@dataclass
+class TextRegion:
+    """Free space in a bubble around a cleaned text box, in a window of the page.
+
+    mask is 1 where text may go (bubble interior, kept a few pixels from its outline); origin is the
+    window's top-left on the page; centre is the text box centre in window coordinates; rows is the
+    free run [top, bottom) of the centre column.
     """
+    mask: np.ndarray
+    origin: tuple
+    box: tuple
+    centre: tuple
+    rows: tuple
+    column_sums: np.ndarray
+
+    def span(self, y0, y1, min_inside=0.98):
+        """Free columns [x0, x1) around the centre for rows [y0, y1), in window coordinates, or None."""
+        if y0 < 0 or y1 > self.mask.shape[0] or y1 <= y0:
+            return None
+        free = (self.column_sums[y1] - self.column_sums[y0]) >= min_inside * (y1 - y0)
+        ccx = self.centre[0]
+        if not free[ccx]:
+            return None
+        blocked_left = np.flatnonzero(~free[:ccx])
+        blocked_right = np.flatnonzero(~free[ccx:])
+        x0 = blocked_left[-1] + 1 if blocked_left.size else 0
+        x1 = ccx + blocked_right[0] if blocked_right.size else self.mask.shape[1]
+        return int(x0), int(x1)
+
+
+def find_text_region(image, box, other_boxes=(), tolerance=12, edge_gap=4):
+    """The empty bubble around a cleaned text box, or None if no bubble colour surrounds the box.
+
+    Flood-fills the bubble colour (taken from just around the box) outward on the cleaned page. A region
+    that runs on to the page edge is limited to OPEN_REGION_GROWTH times the box around it. Another text
+    box in the same bubble gets the part of the bubble nearer to it.
+    """
+    return diagnose_text_region(image, box, other_boxes, tolerance, edge_gap)[0]
+
+
+# When the bubble colour runs on to the page edge (a bubble breaking out of its panel into the gutter,
+# a bubble cut by the page edge, or text on open background), expansion is limited to a square this
+# many times the box's longer side, around the box.
+OPEN_REGION_GROWTH = 1.5
+# Width of the ring around the box whose colour is taken as the bubble's; the box itself was repainted by
+# the cleaning step and may be slightly off.
+_RING = 6
+
+
+def diagnose_text_region(image, box, other_boxes=(), tolerance=12, edge_gap=4):
+    """find_text_region plus a dict of measurements saying why the region was or was not found."""
+    info = {"reason": "ok"}
     x_min, y_min, x_max, y_max = map(int, box)
     box_w, box_h = x_max - x_min, y_max - y_min
     if box_w <= 0 or box_h <= 0:
-        return box
-
+        return None, {"reason": "empty box"}
     img = np.asarray(image.convert("RGB"))
     img_h, img_w = img.shape[:2]
     margin = max(3 * max(box_w, box_h), 100)
-    cx0, cy0 = max(0, x_min - margin), max(0, y_min - margin)
-    cx1, cy1 = min(img_w, x_max + margin), min(img_h, y_max + margin)
-    crop = img[cy0:cy1, cx0:cx1].astype(np.int16)
-    bx0, by0, bx1, by1 = x_min - cx0, y_min - cy0, x_max - cx0, y_max - cy0
+    while True:
+        cx0, cy0 = max(0, x_min - margin), max(0, y_min - margin)
+        cx1, cy1 = min(img_w, x_max + margin), min(img_h, y_max + margin)
+        crop = img[cy0:cy1, cx0:cx1].astype(np.int16)
+        bx0, by0, bx1, by1 = x_min - cx0, y_min - cy0, x_max - cx0, y_max - cy0
 
-    # The cleaning step paints the box with the bubble colour, so the box's median is that colour.
-    bubble_color = np.median(crop[by0:by1, bx0:bx1].reshape(-1, 3), axis=0)
-    similar = (np.abs(crop - bubble_color).max(axis=2) <= tolerance).astype(np.uint8)
-    # Close small holes such as leftover anti-aliased text specks.
-    similar = cv2.morphologyEx(similar, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        ring = np.zeros(crop.shape[:2], bool)
+        ring[max(0, by0 - _RING) : by1 + _RING, max(0, bx0 - _RING) : bx1 + _RING] = True
+        ring[by0:by1, bx0:bx1] = False
+        bubble_color = np.median(crop[ring].reshape(-1, 3), axis=0)
+        similar = (np.abs(crop - bubble_color).max(axis=2) <= tolerance).astype(np.uint8)
+        info["bubble_color"] = [int(c) for c in bubble_color]
+        # How evenly the cleaning painted the box: the share of its pixels matching the bubble colour.
+        info["box_match"] = round(float(similar[by0:by1, bx0:bx1].mean()), 3)
+        # Close small holes such as leftover anti-aliased text specks.
+        similar = cv2.morphologyEx(similar, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
-    _, labels = cv2.connectedComponents(similar, connectivity=4)
-    box_labels = labels[by0:by1, bx0:bx1]
-    box_labels = box_labels[box_labels > 0]
-    if box_labels.size == 0:
-        return box
-    region = labels == np.bincount(box_labels).argmax()
+        _, labels = cv2.connectedComponents(similar, connectivity=4)
+        ring_labels = labels[ring]
+        ring_labels = ring_labels[ring_labels > 0]
+        if ring_labels.size == 0:
+            return None, {**info, "reason": "no bubble colour around the box"}
+        region = labels == np.bincount(ring_labels).argmax()
 
-    if region[0, :].any() or region[-1, :].any() or region[:, 0].any() or region[:, -1].any():
-        return box
+        # Reaching the page edge means the bubble is not closed off (open background, a gutter, the page
+        # edge); reaching only the window edge means a big bubble around an off-centre box, so look further.
+        touches_page = (
+            (cy0 == 0 and region[0, :].any()) or (cy1 == img_h and region[-1, :].any())
+            or (cx0 == 0 and region[:, 0].any()) or (cx1 == img_w and region[:, -1].any())
+        )
+        touches_window = region[0, :].any() or region[-1, :].any() or region[:, 0].any() or region[:, -1].any()
+        if touches_page:
+            edges = [
+                name for name, hit in [
+                    ("top", cy0 == 0 and region[0, :].any()), ("bottom", cy1 == img_h and region[-1, :].any()),
+                    ("left", cx0 == 0 and region[:, 0].any()), ("right", cx1 == img_w and region[:, -1].any()),
+                ] if hit
+            ]
+            # A large share means the fill ran into the page background (gutter, gap in the outline).
+            info.update(reason="open, limited", edges=edges, region_page_share=round(float(region.sum()) / (img_w * img_h), 3))
+            half = int(OPEN_REGION_GROWTH * max(box_w, box_h)) // 2
+            ccx, ccy = (bx0 + bx1) // 2, (by0 + by1) // 2
+            limit = np.zeros_like(region)
+            limit[max(0, ccy - half) : ccy + half, max(0, ccx - half) : ccx + half] = True
+            region &= limit
+            break
+        if not touches_window:
+            break
+        margin *= 2
+
+    own = (bx0, by0, bx1, by1)
+    ys, xs = np.mgrid[0 : region.shape[0], 0 : region.shape[1]]
+    own_distance = None
     for other in other_boxes:
-        ox, oy = int((other[0] + other[2]) / 2) - cx0, int((other[1] + other[3]) / 2) - cy0
+        ob = (other[0] - cx0, other[1] - cy0, other[2] - cx0, other[3] - cy0)
+        ox, oy = int((ob[0] + ob[2]) / 2), int((ob[1] + ob[3]) / 2)
         if 0 <= ox < region.shape[1] and 0 <= oy < region.shape[0] and region[oy, ox]:
-            return box
+            if own_distance is None:
+                own_distance = _box_distance(xs, ys, own)
+            region &= own_distance < _box_distance(xs, ys, ob)
 
-    # Keep the text a few pixels away from the bubble outline.
+    # The box is free space even if the cleaning painted it a slightly different colour than the bubble.
+    # The +1 covers the right and bottom edge that ImageDraw.rectangle also paints when cleaning.
+    region[by0 : by1 + 1, bx0 : bx1 + 1] = True
+    # Keep the text a few pixels away from the bubble outline (and from a neighbour's share).
     region = cv2.erode(region.astype(np.uint8), np.ones((2 * edge_gap + 1,) * 2, np.uint8))
     # Treat the original box as free space even where erosion or specks nibbled it.
     region[by0:by1, bx0:bx1] = 1
-    integral = cv2.integral(region)
 
-    def inside(x0, y0, x1, y1):
-        if x0 < 0 or y0 < 0 or x1 > region.shape[1] or y1 > region.shape[0]:
-            return False
-        total = integral[y1, x1] - integral[y0, x1] - integral[y1, x0] + integral[y0, x0]
-        return total >= min_inside * (x1 - x0) * (y1 - y0)
+    column_sums = np.vstack([np.zeros((1, region.shape[1]), np.int32), np.cumsum(region, axis=0, dtype=np.int32)])
+    ccx, ccy = (bx0 + bx1) // 2, (by0 + by1) // 2
+    top = ccy
+    while top > 0 and region[top - 1, ccx]:
+        top -= 1
+    bottom = ccy + 1
+    while bottom < region.shape[0] and region[bottom, ccx]:
+        bottom += 1
+    info["region_box_ratio"] = round(float(region.sum()) / (box_w * box_h), 2)
+    return TextRegion(region, (cx0, cy0), (bx0, by0, bx1, by1), (ccx, ccy), (top, bottom), column_sums), info
 
-    step = 2
-    x0, y0, x1, y1 = bx0, by0, bx1, by1
-    grew = True
-    while grew:
-        grew = False
-        if inside(x0 - step, y0, x0, y1):
-            x0 -= step
-            grew = True
-        if inside(x1, y0, x1 + step, y1):
-            x1 += step
-            grew = True
-        if inside(x0, y0 - step, x1, y0):
-            y0 -= step
-            grew = True
-        if inside(x0, y1, x1, y1 + step):
-            y1 += step
-            grew = True
 
-    return [x0 + cx0, y0 + cy0, x1 + cx0, y1 + cy0]
+# Aspect ratio (width / height) buckets; the best area of each shape is offered to the renderer.
+_ASPECT_BUCKETS = (0.5, 0.8, 1.25, 2.0)
+
+
+def text_areas_in_region(region, max_bands=48):
+    """The largest rectangle of each shape (tall and narrow to short and wide) around the box centre, largest first.
+
+    A tall box of vertical Japanese text is a poor shape for horizontal translated text, so the height
+    is free to shrink while the width grows.
+    """
+    ccx, ccy = region.centre
+    top, bottom = region.rows
+    step = max(2, (bottom - top) // max_bands)
+    best = {}  # aspect bucket -> (area, rect)
+    for y0 in range(ccy, top - 1, -step):
+        for y1 in range(ccy + 1, bottom + 1, step):
+            span = region.span(y0, y1)
+            if span is None:
+                continue
+            x0, x1 = span
+            area = (x1 - x0) * (y1 - y0)
+            bucket = int(np.searchsorted(_ASPECT_BUCKETS, (x1 - x0) / (y1 - y0)))
+            if area > best.get(bucket, (0,))[0]:
+                best[bucket] = (area, (x0, y0, x1, y1))
+    ox, oy = region.origin
+    return [[int(x0 + ox), int(y0 + oy), int(x1 + ox), int(y1 + oy)] for _, (x0, y0, x1, y1) in sorted(best.values(), reverse=True)]
+
+
+def find_text_areas(image, box, other_boxes=(), **kwargs):
+    """Candidate rectangles for the text inside the empty bubble around a cleaned text box, largest first.
+
+    Returns [box] when the box is not clearly inside a bubble; otherwise the box itself is offered last,
+    in case its own shape suits the text best.
+    """
+    region = find_text_region(image, box, other_boxes, **kwargs)
+    if region is None:
+        return [box]
+    areas = text_areas_in_region(region)
+    if list(box) not in areas:
+        areas.append(list(box))
+    return areas
+
+
+def find_text_area(image, box, other_boxes=(), **kwargs):
+    """The largest rectangle from find_text_areas."""
+    return find_text_areas(image, box, other_boxes, **kwargs)[0]
+
+
+@dataclass
+class ShapedLine:
+    """One line of shaped text; left/right is the text's own extent, top/bottom its band, in page coordinates."""
+    text: str
+    left: float
+    top: int
+    right: float
+    bottom: int
+
+
+@dataclass
+class ShapedLayout:
+    size: int
+    lines: list
+
+
+def _line_pitch(font, size):
+    ascent, descent = font.getmetrics()
+    height = ascent + descent + 2 * stroke_width_for(size)
+    return height, height + max(1, size // 8)
+
+
+def _shape_lines(words, region, font, size, n_lines):
+    """Fill words into n_lines lines centred on the bubble, each as wide as the bubble is at its height."""
+    line_h, pitch = _line_pitch(font, size)
+    stroke = stroke_width_for(size)
+    top_run, bottom_run = region.rows
+    block_top = (top_run + bottom_run) // 2 - (n_lines * pitch - (pitch - line_h)) // 2
+    # Breathing room from the bubble outline, growing with the font so big text does not crowd it.
+    pad = size // 3
+    lines, i = [], 0
+    for n in range(n_lines):
+        y0 = block_top + n * pitch
+        span = region.span(y0 - pad, y0 + line_h + pad)
+        if span is None:
+            return None
+        x0, x1 = span
+        margin = max(0.03 * (x1 - x0), pad)
+        width = (x1 - x0) - 2 * margin - 2 * stroke
+        line = []
+        while i < len(words) and font.getlength(" ".join(line + [words[i]])) <= width:
+            line.append(words[i])
+            i += 1
+        if not line:
+            return None  # a word wider than this line: the rectangle layout can hyphenate it
+        lines.append((" ".join(line), (x0 + x1) / 2, y0))
+        if i == len(words):
+            break
+    return lines if i == len(words) else None
+
+
+def layout_in_region(text, region, font_path, max_font_size=MAX_FONT_SIZE):
+    """Lines that follow the bubble's shape (short at a round bubble's top and bottom, long in its middle).
+
+    Returns the layout with the largest font, or None if the text cannot be set at a legible size.
+    """
+    words = text.split()
+    if not words:
+        return None
+    top_run, bottom_run = region.rows
+    max_size = min(max_font_size, max(20, (bottom_run - top_run) // 4))
+
+    def attempt(size):
+        font = ImageFont.truetype(font_path, size)
+        _, pitch = _line_pitch(font, size)
+        for n_lines in range(1, min(len(words), (bottom_run - top_run) // pitch) + 1):
+            lines = _shape_lines(words, region, font, size, n_lines)
+            if lines is not None:
+                return font, lines
+        return None
+
+    best, lo, hi = None, MIN_LEGIBLE_SIZE, max_size
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        found = attempt(mid)
+        if found:
+            best, lo = (mid, *found), mid + 1
+        else:
+            hi = mid - 1
+    if best is None:
+        return None
+
+    size, font, lines = best
+    line_h, _ = _line_pitch(font, size)
+    ox, oy = region.origin
+    shaped = []
+    for line, centre_x, y0 in lines:
+        half = font.getlength(line) / 2 + stroke_width_for(size)
+        shaped.append(ShapedLine(line, centre_x - half + ox, int(y0 + oy), centre_x + half + ox, int(y0 + line_h + oy)))
+    return ShapedLayout(size, shaped)
 
 
 def estimate_bubble_bg_color(pil_image, outer_box, border_thickness=12):
@@ -432,7 +697,41 @@ def find_max_fontsize(text, draw, font_path, box_w, box_h, min_size=1, max_size=
     return size, wrapped
 
 
-def replace_text_with_translation(image_path, font_path, translations, expand_text_area=True):
+# Stand-ins for symbols that comic fonts often lack; anything else the font lacks (emoji, ♥, ♪) is dropped.
+_GLYPH_SUBSTITUTES = {
+    "〜": "~", "～": "~", "—": "-", "–": "-", "―": "-", "…": "...",
+    "★": "*", "☆": "*", "✨": "*",
+}
+
+
+@lru_cache(maxsize=None)
+def _font_charset(font_path: str) -> frozenset:
+    with TTFont(font_path, lazy=True) as font:
+        return frozenset(font.getBestCmap())
+
+
+def renderable_text(text: str, font_path: str) -> str:
+    """Replace or drop characters the font has no glyph for, so they are not drawn as empty boxes."""
+    charset = _font_charset(font_path)
+
+    def supported(s: str) -> bool:
+        return bool(s) and all(c.isspace() or ord(c) in charset for c in s)
+
+    out = []
+    for char in text:
+        if supported(char):
+            out.append(char)
+            continue
+        for candidate in (unicodedata.normalize("NFKC", char), _GLYPH_SUBSTITUTES.get(char, "")):
+            if supported(candidate):
+                out.append(candidate)
+                break
+    return re.sub(r"\s{2,}", " ", "".join(out)).strip()
+
+
+def replace_text_with_translation(image_path, font_path, translations, expand_text_area=True, max_font_size=None):
+    """Draw each translation on the cleaned page; max_font_size caps text in expanded areas (default MAX_FONT_SIZE)."""
+    max_font_size = max_font_size or MAX_FONT_SIZE
     image = Image.open(image_path)
     # Measure free bubble space on the cleaned page before any translation is drawn onto it.
     cleaned = image.copy()
@@ -440,12 +739,13 @@ def replace_text_with_translation(image_path, font_path, translations, expand_te
     polygons = [t["polygon"] for t in translations]
     for i, translation in enumerate(translations):
         polygon = translation["polygon"]
-        translated_text = translation["translated"]
+        translated_text = renderable_text(translation["translated"], font_path)
         if translated_text:
-            text_area = None
+            region = None
             if expand_text_area:
                 others = polygons[:i] + polygons[i + 1 :]
-                area = find_text_area(cleaned, polygon, others)
-                text_area = area if list(area) != list(polygon) else None
-            draw_wrapped_text(image, draw, polygon, translated_text, font_path, text_area)
+                region = find_text_region(cleaned, polygon, others)
+            draw_wrapped_text(
+                image, draw, polygon, translated_text, font_path, text_region=region, max_font_size=max_font_size
+            )
     return image
