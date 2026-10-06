@@ -30,7 +30,7 @@ def _scaled_area(area, scale, image_size):
 
 
 # Largest font for text in an expanded area (short text in a big bubble); overridable per page.
-MAX_FONT_SIZE = 64
+MAX_FONT_SIZE = 48
 
 
 def _max_font_size(area, expanded, cap=MAX_FONT_SIZE):
