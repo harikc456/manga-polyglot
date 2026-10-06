@@ -1,12 +1,18 @@
+import pytest
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 from img_utils import (
+    renderable_text,
     draw_wrapped_text,
     fill_bubble_with_estimated_color,
     find_max_fontsize,
     find_text_area,
+    find_text_areas,
+    find_text_region,
+    layout_in_region,
+    text_areas_in_region,
     replace_text_with_translation,
     wrap_text,
     sort_manga_reading_order,
@@ -112,17 +118,24 @@ def test_text_area_expands_inside_big_bubble():
         assert _inside_ellipse(*corner, ellipse)
 
 
-def test_text_area_unchanged_on_open_background():
+def test_text_area_on_open_background_grows_only_within_limit():
     img = Image.new("RGB", (600, 600), (255, 255, 255))
     box = [270, 220, 330, 280]
-    assert find_text_area(img, box) == box
+    x0, y0, x1, y1 = find_text_area(img, box)
+    assert x1 - x0 > 60 and y1 - y0 > 60
+    assert x1 - x0 <= 1.5 * 60 + 2 and y1 - y0 <= 1.5 * 60 + 2
 
 
-def test_text_area_unchanged_when_bubble_holds_another_text_box():
+def test_text_area_shares_bubble_with_another_text_box():
+    """Two boxes in one bubble each grow into their own half instead of neither growing."""
     img = _bubble_page()
     box = [180, 220, 240, 280]
     other = [360, 220, 420, 280]
-    assert find_text_area(img, box, [other]) == box
+    x0, y0, x1, y1 = find_text_area(img, box, [other])
+    assert x1 <= 300 + 2  # stays on its side of the midpoint between the boxes
+    assert (x1 - x0) * (y1 - y0) >= 2 * 60 * 60
+    ox0, _, ox1, _ = find_text_area(img, other, [box])
+    assert ox0 >= 300 - 2 and ox1 - ox0 > 60
 
 
 def test_text_area_barely_grows_in_tight_bubble():
@@ -198,3 +211,207 @@ def test_text_has_contrasting_outline():
     draw_wrapped_text(img, ImageDraw.Draw(img), [50, 50, 250, 250], "Hi", FONT_PATH)
     colours = {c for _, c in img.getcolors(maxcolors=100000)}
     assert (0, 0, 0) in colours
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Hello!", "Hello!"),
+        ("Wait〜!", "Wait~!"),
+        ("Wait～!", "Wait~!"),
+        ("Well—fine.", "Well-fine."),
+        ("★Special★", "*Special*"),
+        ("I love you♥", "I love you"),
+        ("La la ♪ la", "La la la"),
+        ("Thanks 😊!", "Thanks !"),
+        ("Hi ❤️ there", "Hi there"),
+        ("😊", ""),
+    ],
+)
+def test_renderable_text_replaces_or_drops_missing_glyphs(text, expected):
+    assert renderable_text(text, FONT_PATH) == expected
+
+
+def test_renderable_text_keeps_glyphs_the_font_has():
+    # Arial has ♥ and ♪, so they are kept there.
+    arial = str(Path(FONT_PATH).parent / "ARIAL.TTF")
+    assert renderable_text("I love you♥ ♪", arial) == "I love you♥ ♪"
+
+
+def test_render_skips_text_with_no_drawable_glyphs(tmp_path):
+    page = tmp_path / "page.png"
+    Image.new("RGB", (200, 100), "white").save(page)
+    out = replace_text_with_translation(str(page), FONT_PATH, [{"polygon": [10, 10, 190, 90], "translated": "😊"}])
+    assert out.getextrema() == ((255, 255),) * 3  # nothing drawn
+
+
+def test_tall_box_widens_into_round_bubble():
+    """A tall vertical-Japanese box must not keep its full height and stay narrow."""
+    ellipse = (200, 150, 600, 650)
+    img = _bubble_page(size=(800, 800), ellipse=ellipse)
+    box = [370, 230, 430, 570]
+    areas = find_text_areas(img, box)
+    widest = max(areas, key=lambda a: a[2] - a[0])
+    assert widest[2] - widest[0] >= 250
+    for x0, y0, x1, y1 in areas:
+        for corner in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]:
+            assert _inside_ellipse(*corner, ellipse)
+
+
+def test_text_areas_offer_different_shapes():
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    areas = find_text_areas(img, [370, 230, 430, 570])
+    aspects = [(a[2] - a[0]) / (a[3] - a[1]) for a in areas]
+    assert min(aspects) < 0.8 and max(aspects) > 1.2
+
+
+def test_render_tall_box_uses_bigger_font_than_box_alone(tmp_path):
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    page = tmp_path / "page.png"
+    img.save(page)
+    translations = [{"translated": "Wait for me, I said I'm coming with you!", "polygon": [370, 230, 430, 570]}]
+
+    plain = _diff_bbox(replace_text_with_translation(str(page), FONT_PATH, translations, expand_text_area=False), img)
+    grown = _diff_bbox(replace_text_with_translation(str(page), FONT_PATH, translations, expand_text_area=True), img)
+
+    assert grown[2] - grown[0] > 2 * (plain[2] - plain[0])  # uses the bubble's width
+    assert (grown[2] - grown[0]) * (grown[3] - grown[1]) > 2 * (plain[2] - plain[0]) * (plain[3] - plain[1])  # bigger font
+
+
+def test_off_centre_box_in_big_bubble_expands():
+    """The bubble reaches past the initial search window around a small box; that is not open background."""
+    img = _bubble_page(size=(1200, 900), ellipse=(100, 100, 1100, 800))
+    box = [180, 420, 220, 460]
+    x0, y0, x1, y1 = find_text_area(img, box)
+    assert (x1 - x0) * (y1 - y0) >= 10 * 40 * 40
+
+
+_LONG_LINE = "Wait for me, I said I'm coming with you no matter what happens!"
+
+
+def _best_rect_size(img, region, text):
+    from img_utils import _fit_in, _max_font_size
+    draw = ImageDraw.Draw(img)
+    sizes = [
+        _fit_in(text, draw, FONT_PATH, a, _max_font_size(a, True))
+        for a in text_areas_in_region(region)
+    ]
+    return max(size for size, _, fits in sizes if fits)
+
+
+def _manga_page():
+    """White page (gutters) with a grey panel; one bubble breaks out of the panel into the gutter."""
+    img = Image.new("RGB", (1200, 1700), "white")
+    d = ImageDraw.Draw(img)
+    d.rectangle((40, 40, 1160, 820), fill=(150, 150, 150), outline="black", width=5)
+    d.ellipse((700, 540, 1000, 940), fill="white", outline="black", width=4)
+    return img
+
+
+def test_bubble_leaking_into_gutter_still_expands_within_limit():
+    img = _manga_page()
+    box = [820, 620, 880, 860]
+    x0, y0, x1, y1 = find_text_area(img, box)
+    assert x1 - x0 >= 150  # much wider than the 60px box
+    assert x1 - x0 <= 1.5 * 240 + 2 and y1 - y0 <= 1.5 * 240 + 2
+
+
+def test_bubble_cut_by_page_edge_still_expands():
+    img = Image.new("RGB", (800, 800), (150, 150, 150))
+    ImageDraw.Draw(img).ellipse((500, 300, 900, 800), fill="white", outline="black", width=4)
+    box = [660, 400, 720, 640]
+    x0, y0, x1, y1 = find_text_area(img, box)
+    assert x1 - x0 >= 120
+
+
+def test_off_colour_cleaning_fill_still_finds_bubble():
+    """The cleaning step painted the box light grey inside a white bubble."""
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    box = [370, 230, 430, 570]
+    ImageDraw.Draw(img).rectangle(box, fill=(232, 232, 232))
+    x0, y0, x1, y1 = find_text_area(img, box)
+    assert x1 - x0 >= 200
+
+
+def test_shaped_layout_lines_follow_round_bubble():
+    ellipse = (200, 150, 600, 650)
+    img = _bubble_page(size=(800, 800), ellipse=ellipse)
+    region = find_text_region(img, [370, 230, 430, 570])
+    layout = layout_in_region(_LONG_LINE, region, FONT_PATH)
+
+    assert layout is not None
+    assert " ".join(line.text for line in layout.lines) == _LONG_LINE
+    widths = [line.right - line.left for line in layout.lines]
+    middle = widths[len(widths) // 2]
+    assert middle > widths[0] and middle > widths[-1]  # narrow at the top and bottom, wide in the middle
+    for line in layout.lines:
+        for x, y in [(line.left, line.top), (line.right, line.top), (line.left, line.bottom), (line.right, line.bottom)]:
+            assert _inside_ellipse(x, y, ellipse)
+
+
+def test_shaped_layout_takes_a_font_at_least_as_big_as_any_rectangle():
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    region = find_text_region(img, [370, 230, 430, 570])
+    assert layout_in_region(_LONG_LINE, region, FONT_PATH).size >= _best_rect_size(img, region, _LONG_LINE)
+
+
+def test_shaped_layout_is_none_when_a_word_cannot_fit():
+    img = _bubble_page(ellipse=(240, 190, 360, 310))
+    region = find_text_region(img, [265, 215, 335, 285])
+    assert layout_in_region("Supercalifragilisticexpialidocious", region, FONT_PATH) is None
+
+
+def test_render_shaped_text_stays_inside_bubble(tmp_path):
+    ellipse = (200, 150, 600, 650)
+    img = _bubble_page(size=(800, 800), ellipse=ellipse)
+    page = tmp_path / "page.png"
+    img.save(page)
+    out = replace_text_with_translation(str(page), FONT_PATH, [{"translated": _LONG_LINE, "polygon": [370, 230, 430, 570]}])
+    x0, y0, x1, y1 = _diff_bbox(out, img)
+    assert x1 - x0 > 200
+    import numpy as np
+    from PIL import ImageChops
+    ys, xs = np.nonzero(np.asarray(ImageChops.difference(out.convert("RGB"), img).convert("L")))
+    assert all(_inside_ellipse(x, y, ellipse) for x, y in zip(xs, ys))
+
+
+def test_short_text_in_big_bubble_goes_past_old_cap():
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    region = find_text_region(img, [370, 230, 430, 570])
+    assert layout_in_region("Huh?!", region, FONT_PATH).size > 36
+
+
+def test_max_font_size_caps_short_text():
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    region = find_text_region(img, [370, 230, 430, 570])
+    assert layout_in_region("Huh?!", region, FONT_PATH, max_font_size=30).size == 30
+
+
+def test_render_max_font_size_changes_text_size(tmp_path):
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    page = tmp_path / "page.png"
+    img.save(page)
+    tr = [{"translated": "Huh?!", "polygon": [370, 230, 430, 570]}]
+    small = _diff_bbox(replace_text_with_translation(str(page), FONT_PATH, tr, max_font_size=30), img)
+    big = _diff_bbox(replace_text_with_translation(str(page), FONT_PATH, tr, max_font_size=90), img)
+    assert big[2] - big[0] > 2 * (small[2] - small[0])
+
+
+def test_shaped_text_keeps_clear_of_outline_at_large_sizes():
+    ellipse = (200, 150, 600, 650)
+    img = _bubble_page(size=(800, 800), ellipse=ellipse)
+    region = find_text_region(img, [370, 230, 430, 570])
+    layout = layout_in_region(_LONG_LINE, region, FONT_PATH, max_font_size=96)
+    gap = layout.size // 3
+    for line in layout.lines:
+        for x, y in [(line.left - gap, line.top - gap), (line.right + gap, line.top - gap),
+                     (line.left - gap, line.bottom + gap), (line.right + gap, line.bottom + gap)]:
+            assert _inside_ellipse(x, y, ellipse)
+
+
+def test_off_colour_cleaning_fill_does_not_block_any_side():
+    img = _bubble_page(size=(800, 800), ellipse=(200, 150, 600, 650))
+    box = [370, 230, 430, 570]
+    ImageDraw.Draw(img).rectangle(box, fill=(232, 232, 232))  # inclusive, like fill_bubble_with_estimated_color
+    x0, y0, x1, y1 = find_text_area(img, box)
+    assert x0 < 300 and x1 > 500

@@ -6,11 +6,13 @@ from PIL import Image
 from ollama import chat, ChatResponse
 from pydantic import ValidationError
 from data_model import Translation, SessionMemory
-from memory_utils import serialize_memory, format_memory_for_prompt
+from memory_utils import serialize_memory, format_memory_for_prompt, format_glossary, filter_memory, merge_memory
 
 # Room for the system prompt, surrounding-page context, session memory and previous translations;
 # Ollama silently drops the start of prompts that exceed num_ctx.
 TRANSLATE_NUM_CTX = 8192
+# The memory update sees the known names, the summary and a whole page of originals and translations.
+MEMORY_NUM_CTX = 8192
 
 # Plain-text replies are wrapped in these tags: the reply is prefilled with the opening tag and
 # generation stops at the closing one, so lead-ins ("Here is the translation:") and trailing notes
@@ -44,9 +46,24 @@ CRITICAL OUTPUT RULES:
 _EXPRESSIVE_PUNCT = "!?！？…‥.。、・~〜"
 
 
+# In vertical text the wave dash 〜 is drawn rotated and looks like an S, and OCR reads it as one (喂〜! -> 喂S!).
+# An S counts as a misread only when it directly follows CJK text and is followed by the end, a space,
+# punctuation or a small kana, which is where 〜 goes; words like Sランク, S級 or SNS are left alone.
+_MISREAD_WAVE_DASH = re.compile(
+    r"(?<=[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF])[SsＳｓ]+"
+    r"(?=$|\s|[!?！？…‥.。、・~〜」』）)]|[っッぁぃぅぇぉァィゥェォ])"
+)
+
+
+def fix_misread_wave_dash(text: str) -> str:
+    return _MISREAD_WAVE_DASH.sub(lambda m: "〜" * len(m.group()), text)
+
+
 def clean_ocr_garbage(text: str) -> str:
     if not text.strip():
         return text
+
+    text = fix_misread_wave_dash(text)
 
     # Remove long chains of identical box-drawing / line chars
     text = re.sub(r'([┌┐└┘├┤┬┴┼─│━┃═║]{3,})', '', text)          # ≥3 repeated line chars
@@ -249,6 +266,9 @@ def call_llm(
         model=model,
         format=format,
         messages=messages,
+        # A top-level argument: inside options Ollama ignores it, and thinking models (e.g. qwen3.5)
+        # then spend the whole reply on hidden reasoning and return empty content.
+        think=False,
         options={
             "temperature": temperature,
             "num_ctx": num_ctx,
@@ -256,7 +276,6 @@ def call_llm(
             "frequency_penalty": frequency_penalty,
             "presence_penalty": presence_penalty,
             "stop": stop,
-            "think": False, 
         },
         stream=False,
     )
@@ -283,6 +302,11 @@ def translate(
     text = clean_ocr_garbage(text)
     if japanese:
         text = post_process(text)
+    context = fix_misread_wave_dash(context)
+
+    # Only the entities that occur around this bubble; the full glossary is mostly noise to the model.
+    if session_memory is not None:
+        session_memory = filter_memory(session_memory, f"{context}\n{text}")
 
     if use_json:
         if image is not None:
@@ -319,7 +343,7 @@ def translate(
 
     if needs_fallback(cleaned_text, source_language):
         cleaned_text = fallback_translation(
-            text, model, source_language, target_language, image
+            text, model, source_language, target_language, image, session_memory=session_memory
         )
 
     print(f"Input: {text}")
@@ -329,11 +353,23 @@ def translate(
 
 
 def fallback_translation(
-    text: str, model: str, source_language: str, target_language: str, image: Image.Image = None
+    text: str,
+    model: str,
+    source_language: str,
+    target_language: str,
+    image: Image.Image = None,
+    session_memory: SessionMemory = None,
 ) -> str:
-    """Fallback: context-free, machine-translation-style prompt for when the main prompt's output is unusable."""
+    """Fallback: context-free, machine-translation-style prompt for when the main prompt's output is unusable.
+
+    Only the glossary of known names is passed on, so names stay consistent with the main translations.
+    """
     system_prompt = f"Your role is to act as DeepL translate. Translate the given text in {source_language} to {target_language}. Output ONLY the translation."
-    user_prompt = f"Translate to {target_language}: {text}\n{TAG_INSTRUCTION}"
+    user_prompt = f"Translate to {target_language}: {text}\n"
+    glossary = format_glossary(session_memory) if session_memory else []
+    if glossary:
+        user_prompt += "Translate these names as given:\n" + "\n".join(f"- {line}" for line in glossary) + "\n"
+    user_prompt += TAG_INSTRUCTION
 
     fallback_translation = call_llm(
         model, system_prompt, user_prompt, num_ctx=4096, image=image,
@@ -344,9 +380,16 @@ def fallback_translation(
 
 MEMORY_UPDATE_SYSTEM_PROMPT = """
 You are a manga translation assistant responsible for maintaining a translation memory.
-Given the current page's translations and the existing memory state, you must:
-1. Identify new named entities: characters (with gender inferred from speech/context/names), places, organizations
-2. Preserve ALL entries from the existing memory — never drop an entity just because it does not appear in the current page. Only update an entry if a clear correction is warranted.
+Given the current page's translations and the names already known, you must:
+1. List only NEW named entities from this page: characters (with gender inferred from speech/context/names), places, organizations.
+   Copy each original name exactly as it is written in the original text, and its translation exactly as it is written in the translated text.
+   Only proper names: no pronouns, titles on their own, common nouns or sound effects.
+   Leave honorifics (先輩, さん, くん, ちゃん, 様) off the original name.
+   Notes are a few words about the character (e.g. "protagonist", "Tanaka's sister"), or empty.
+   Take only the name itself, never the particles or words around it. Example: from 「佐藤くんか…渋谷の店で待ってる」 /
+   "Sato, huh... I'll wait at the shop in Shibuya." the entities are 佐藤 → Sato and 渋谷 → Shibuya
+   (not 佐藤くんか, not 渋谷の店 → "the shop in Shibuya").
+2. Do not repeat known entities, except a known character whose gender was unknown and is now clear from this page.
 3. Rewrite the story summary to include events from this page (150 words max, cumulative)
 
 Output ONLY valid JSON matching the provided schema. No commentary or explanation.
@@ -359,16 +402,17 @@ def update_session_memory(
     model: str,
     temp_dir: str,
 ) -> SessionMemory:
+    """Ask the model for this page's new entities and summary, then merge them into memory in code.
+
+    Existing entries are never dropped or renamed, and entities whose original name is not on the page are rejected,
+    so a bad reply can at worst miss a new name.
+    """
     if not translations:
         return session_memory
 
-    current_chars = [
-        f"{c.original_name} → {c.translated_name} ({c.gender})" +
-        (f", {c.notes}" if c.notes else "")
-        for c in session_memory.characters
-    ]
-    current_places = [f"{p.original} → {p.translated}" for p in session_memory.places]
-    current_orgs = [f"{o.original} → {o.translated}" for o in session_memory.organizations]
+    known_names = [c.original_name for c in session_memory.characters]
+    known_names += [e.original for e in session_memory.places + session_memory.organizations]
+    unknown_gender = [c.original_name for c in session_memory.characters if c.gender == "unknown"]
 
     page_text = "\n".join(
         f"Original: {t['original']}\nTranslated: {t['translated']}"
@@ -381,31 +425,36 @@ def update_session_memory(
         '"organizations":[{"original":"...","translated":"..."}],'
         '"story_summary":"..."}'
     )
-    user_prompt = f"""Current memory state:
-Characters: {', '.join(current_chars) if current_chars else 'none'}
-Places: {', '.join(current_places) if current_places else 'none'}
-Organizations: {', '.join(current_orgs) if current_orgs else 'none'}
-Story summary: {session_memory.story_summary or 'none'}
+    user_prompt = f"""Known names (do not repeat): {', '.join(known_names) if known_names else 'none'}
+Known characters with unknown gender: {', '.join(unknown_gender) if unknown_gender else 'none'}
+Story summary so far: {session_memory.story_summary or 'none'}
 
 Current page translations:
 {page_text}
 
 Expected JSON shape: {schema_hint}
-Return the complete updated memory as JSON."""
+Return the new entities and the updated story summary as JSON."""
 
     response = call_llm(
         model,
         MEMORY_UPDATE_SYSTEM_PROMPT,
         user_prompt,
         format=SessionMemory.model_json_schema(),
-        num_ctx=4096,
+        num_ctx=MEMORY_NUM_CTX,
+        # Names must be copied exactly; repetition penalties push the model to alter or drop them.
+        temperature=0.1,
+        frequency_penalty=0.0,
+        presence_penalty=0.0,
     )
 
     try:
-        updated = SessionMemory.model_validate_json(response)
+        update = SessionMemory.model_validate_json(response)
     except (ValueError, ValidationError) as e:
         print(f"[memory] WARNING: Failed to parse LLM memory update response: {e}. Keeping existing memory.")
-        updated = session_memory
+        update = SessionMemory()
+
+    source_text = "\n".join(t["original"] for t in translations)
+    updated = merge_memory(session_memory, update, source_text)
 
     serialize_memory(updated, os.path.join(temp_dir, "memory.md"))
     return updated

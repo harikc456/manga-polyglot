@@ -8,6 +8,7 @@ dependencies = [
     "torch",
     "transformers>=5",
     "Pillow",
+    "fonttools",
     "tqdm",
     "scipy",
     "fastapi",

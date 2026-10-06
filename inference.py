@@ -14,7 +14,6 @@ from img_utils import (
 from ocr import build_pipeline
 from text_utils import translate, update_session_memory
 from data_model import SessionMemory
-from memory_utils import load_memory
 
 
 def _file_hash(path: str) -> str:
@@ -34,6 +33,17 @@ def _translation_settings(config: dict, source_language: str, target_language: s
         "image_enabled": config.get("image_enabled", False),
         "json_enabled": config.get("json_enabled", True),
         "memory_enabled": config.get("memory_enabled", True),
+        # Memory feeds every later page's prompt, so the model that writes it changes the translations too.
+        "memory_llm_name": config.get("memory_llm_name", config["llm_name"]),
+    }
+
+
+def _render_settings(config: dict) -> dict:
+    """Everything that changes how translations are drawn; a page is redrawn (not retranslated) if these change."""
+    return {
+        "font_path": config["font_path"],
+        "expand_text_area": config.get("expand_text_area", True),
+        "max_font_size": config.get("max_font_size"),
     }
 
 
@@ -53,14 +63,18 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
     image_enabled = config.get("image_enabled", False)
     json_enabled = config.get("json_enabled", True)
     memory_enabled = config.get("memory_enabled", True)
+    memory_llm_name = config.get("memory_llm_name", llm_name)
     expand_text_area = config.get("expand_text_area", True)
+    max_font_size = config.get("max_font_size")  # None: the renderer's default
     ocr_config = config.get("ocr")
     translation_settings = _translation_settings(config, source_language, target_language)
+    render_settings = _render_settings(config)
 
     os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
-    memory_path = os.path.join(temp_dir, "memory.md")
-    session_memory = load_memory(memory_path) if memory_enabled else None
+    # Memory is rebuilt page by page: each translated page's cache holds the memory as it was after that page,
+    # so retranslating from page N starts from page N-1's memory, not the end state of an earlier run.
+    session_memory = SessionMemory() if memory_enabled else None
 
     pipeline = build_pipeline(ocr_config)
 
@@ -150,15 +164,20 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
             and cache_data.get("translated")
             and cache_data.get("translation_settings") == translation_settings
         ):
-            if not os.path.exists(out_path):
-                # Translations are still valid; only the rendered page is missing.
+            if memory_enabled and "memory" in cache_data:
+                session_memory = SessionMemory.model_validate(cache_data["memory"])
+            if not os.path.exists(out_path) or cache_data.get("render_settings") != render_settings:
+                # Translations are still valid; only the rendered page is missing or out of date.
                 cached = [
                     {**t, "polygon": box}
                     for t, box in zip(cache_data.get("translations", []), precomputed_vals["text_boxes"])
                 ]
                 replace_text_with_translation(
-                    cleaned_file_path, font_path, cached, expand_text_area=expand_text_area
+                    cleaned_file_path, font_path, cached, expand_text_area=expand_text_area, max_font_size=max_font_size
                 ).save(out_path)
+                cache_data["render_settings"] = render_settings
+                with open(cache_path, "w") as f:
+                    json.dump(cache_data, f)
             continue
 
         translations = []
@@ -205,20 +224,23 @@ def driver(input_dir, temp_dir, output_dir, config, source_language, target_lang
 
         if translations and memory_enabled:
             session_memory = update_session_memory(
-                translations, session_memory, llm_name, temp_dir
+                translations, session_memory, memory_llm_name, temp_dir
             )
 
         translated_image = replace_text_with_translation(
-            cleaned_file_path, font_path, translations, expand_text_area=expand_text_area
+            cleaned_file_path, font_path, translations, expand_text_area=expand_text_area, max_font_size=max_font_size
         )
         translated_image.save(out_path)
 
         cache_data["translated"] = True
         cache_data["translation_settings"] = translation_settings
+        cache_data["render_settings"] = render_settings
         cache_data["translations"] = [
             {"original": t["original"], "translated": t["translated"]}
             for t in translations
         ]
+        if memory_enabled:
+            cache_data["memory"] = session_memory.model_dump()
         with open(computed[img_path]["cache_path"], "w") as f:
             json.dump(cache_data, f)
 
