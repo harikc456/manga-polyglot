@@ -415,3 +415,16 @@ def test_off_colour_cleaning_fill_does_not_block_any_side():
     ImageDraw.Draw(img).rectangle(box, fill=(232, 232, 232))  # inclusive, like fill_bubble_with_estimated_color
     x0, y0, x1, y1 = find_text_area(img, box)
     assert x0 < 300 and x1 > 500
+
+
+def test_box_with_readable_font_is_not_expanded(tmp_path):
+    """Text that already fits its own box at a readable size is drawn as without expansion."""
+    img = _bubble_page()
+    page = tmp_path / "page.png"
+    img.save(page)
+    translations = [{"translated": "Hey!", "polygon": [240, 200, 360, 300]}]
+
+    plain = replace_text_with_translation(str(page), FONT_PATH, translations, expand_text_area=False)
+    grown = replace_text_with_translation(str(page), FONT_PATH, translations, expand_text_area=True)
+
+    assert grown.tobytes() == plain.tobytes()

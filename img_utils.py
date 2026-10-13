@@ -567,6 +567,7 @@ def get_text_fill_color(background_color):
 
 
 MIN_LEGIBLE_SIZE = 10  # below this, grow the text area (or overflow) rather than shrink the font
+READABLE_FONT_SIZE = 16  # text that fits its own box at this size is drawn there, without expanding
 MIN_FRAGMENT = 3  # shortest piece left on a line when a long word is hyphenated
 
 
@@ -742,7 +743,9 @@ def replace_text_with_translation(image_path, font_path, translations, expand_te
         translated_text = renderable_text(translation["translated"], font_path)
         if translated_text:
             region = None
-            if expand_text_area:
+            size, _, fits = _fit_in(translated_text, draw, font_path, polygon, READABLE_FONT_SIZE)
+            # Only expand boxes too small for a readable font; the original layout suits the rest.
+            if expand_text_area and not (fits and size >= READABLE_FONT_SIZE):
                 others = polygons[:i] + polygons[i + 1 :]
                 region = find_text_region(cleaned, polygon, others)
             draw_wrapped_text(
